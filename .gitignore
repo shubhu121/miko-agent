@@ -1,0 +1,98 @@
+# ═══════════════════════════════════════════
+# User data (stored outside the repository)
+# ═══════════════════════════════════════════
+agents/
+user/
+!skills2set/hana-plugin-creator/agents/
+!skills2set/hana-plugin-creator/agents/**
+!skills2set/office-documents/agents/
+!skills2set/office-documents/agents/**
+
+# ═══════════════════════════════════════════
+# Documentation and reference files
+# ═══════════════════════════════════════════
+.docs/
+CLAUDE.md
+AGENTS.md
+docs/superpowers/
+.superpowers/
+archived/
+devlog/
+research/
+handoff-*.md
+TODO.md
+
+# ═══════════════════════════════════════════
+# Original AI-generated image assets
+# ═══════════════════════════════════════════
+**/jimeng-*.png
+
+# ═══════════════════════════════════════════
+# Build output
+# ═══════════════════════════════════════════
+dist/
+dist-server/
+dist-server-open/
+dist-server-artifact/
+dist-renderer-artifact/
+desktop/dist-splash/
+dist-server-bundle/
+dist-computer-use/
+dist-sandbox/
+dist-open-export/
+desktop/main.bundle.cjs
+desktop/preload.bundle.cjs
+.cache/
+desktop/dist-renderer/
+desktop/native/**/.build/
+vendor/
+inbox/
+
+# Runtime files and dependencies
+# ═══════════════════════════════════════════
+node_modules
+.pi/
+
+# IDE and tooling
+.claude/
+.agents/skills/
+*.code-workspace
+
+CLAUDE.md
+
+# Temporary files
+tmp/
+test-results/
+__pycache__/
+*.pyc
+*.obj
+/index.html
+homepage/
+desktop/src/react/animation-mockup/
+
+# Environment variables and credentials
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.crt
+credentials.json
+secrets.yaml
+secrets.json
+auth.json
+
+# Logs
+*.log
+logs/
+
+# System files
+.DS_Store
+*.db
+
+# Codex reviews
+reviews/
+.superpowers/
+
+# Codex environments
+.codex/

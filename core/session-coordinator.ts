@@ -1,0 +1,5819 @@
+/**
+ * SessionCoordinator — Session English only
+ *
+ * English only Engine English only session English only/English only/English only/English only
+ * isolated English onlysession English onlyactivity session English only
+ * English only engine English only
+ */
+import fs from "fs";
+import fsp from "fs/promises";
+import path from "path";
+import { createAgentSession, SessionManager, estimateTokens, refreshSessionModelFromRegistry } from "../lib/pi-sdk/index.ts";
+import { isSessionJsonlFilename } from "../lib/session-jsonl.ts";
+import { createDefaultSettings } from "./session-defaults.ts";
+import { isDefaultWorkspacePath, restoreDefaultWorkspaceIfMissing } from "../shared/default-workspace.ts";
+import { computeHardTruncation } from "./compaction-utils.ts";
+import {
+  appendCompactionResultToSession,
+  createCachePreservingCompactionResult,
+  runCachePreservingCompactionForSession,
+} from "./session-compactor.ts";
+import { teardownSessionResources } from "./session-teardown.ts";
+import { evaluateSessionHealth, repairOrphanToolResultEntriesInFile } from "./session-health.ts";
+import {
+  applyReminderConsumption,
+  collectReminderBlock,
+  noteTimeObservedForSession,
+  REMINDER_BLOCK_END,
+  REMINDER_BLOCK_PREFIX,
+} from "./session-reminders.ts";
+import { createModuleLogger } from "../lib/debug-log.ts";
+import { BrowserManager } from "../lib/browser/browser-manager.ts";
+import { t, getLocale } from "../lib/i18n.ts";
+import {
+  DEFAULT_SESSION_PERMISSION_MODE,
+  SESSION_PERMISSION_MODES,
+  isReadOnlyPermissionMode,
+  legacyAccessModeFromPermissionMode,
+  normalizeSessionPermissionMode,
+} from "./session-permission-mode.ts";
+import { findModel } from "../shared/model-ref.ts";
+import { computeToolSnapshot, DEFAULT_DISABLED_TOOL_NAMES, uniqueToolNames } from "../shared/tool-categories.ts";
+import {
+  computeReminderLiveToolAvailability,
+  computeRuntimeDisabledToolNames,
+  getStableFeatureDisabledToolNames,
+  toolNamesFromObjects,
+} from "./tool-availability.ts";
+import { isActiveSessionPath, isArchivedDesktopSessionPath } from "./message-utils.ts";
+import { formatWorkspaceScopePrompt, normalizeSessionFolderScope, normalizeWorkspaceScope } from "../shared/workspace-scope.ts";
+import { buildWorkspaceInstructionPrompt } from "./workspace-instruction-files.ts";
+import { getProviderPromptPatches } from "./provider-prompt-patches.ts";
+import {
+  DEEPSEEK_ROLEPLAY_REASONING_PATCH_EXPERIMENT_ID,
+  getResolvedExperimentValue,
+} from "../lib/experiments/registry.ts";
+import { isDeepSeekModel } from "./provider-compat.ts";
+import {
+  normalizePlainDescription,
+  stripClosedInternalNarrationBlocks,
+} from "../lib/text/internal-narration.ts";
+import { prepareVisionInputForTextOnlyModel } from "./vision-prepare.ts";
+import { prepareModelImageInputsForPrompt } from "./model-image-preprocess.ts";
+import {
+  pruneSessionInlineMediaHistory,
+  repairSessionInlineMediaEntriesInFile,
+} from "./session-inline-media-prune.ts";
+import {
+  flushSessionManagerSnapshot,
+  repairOversizedSessionEntries,
+  repairOversizedSessionEntriesInFile,
+  schedulePreAssistantSessionManagerFlush,
+} from "./session-jsonl-file.ts";
+import { createVisionContextInjectionExtension } from "./vision-context-injector.ts";
+import {
+  createSessionTurnContextExtension,
+  normalizeSessionTurnContext,
+} from "./session-turn-context.ts";
+import {
+  modelSupportsDirectAudioInput,
+  modelSupportsAudioInput,
+  modelSupportsDirectVideoInput,
+  modelSupportsVideoInput,
+} from "../shared/model-capabilities.ts";
+import {
+  normalizeSessionThinkingLevel,
+  normalizeThinkingLevelForModel,
+  resolveModelDefaultThinkingLevel,
+  resolveThinkingLevelForModel,
+} from "./session-thinking-level.ts";
+import {
+  resolveSessionSkillsForRuntime,
+  snapshotSkillsForSession,
+} from "../lib/skills/session-skill-snapshot.ts";
+import { SessionListProjectionCache } from "./session-list-projection-cache.ts";
+import {
+  buildLlmContextCachePrefixContract,
+  diffCachePrefixContracts,
+  summarizeCachePrefixContract,
+} from "../lib/llm/cache-prefix-contract.ts";
+import { buildSessionCacheSnapshot as buildSessionCacheSnapshotValue } from "./session-cache-snapshot.ts";
+import { repairRestoredToolSnapshotDetailed, sameToolNames } from "./tool-snapshot-repair.ts";
+import { buildSessionCapabilityDrift } from "./session-capability-drift.ts";
+import {
+  SESSION_PROMPT_SNAPSHOT_VERSION,
+  freezeAgentsFilesResult,
+  freezeSkillsResult,
+  normalizeSessionPromptSnapshot,
+  normalizeStringArray,
+} from "./session-prompt-snapshot.ts";
+import { buildTurnInputPresentationEvent } from "../lib/turn-input-presentation.ts";
+import { ensureSessionRefForPath } from "./session-manifest/ref.ts";
+
+const log = createModuleLogger("session");
+const SESSION_META_PAYLOAD_DIR = "session-meta-payloads";
+const SESSION_META_PAYLOAD_FIELDS = ["promptSnapshot", "memoryReflectionSnapshot"];
+const SESSION_META_PAYLOAD_INLINE_LIMIT_BYTES = 256 * 1024;
+const SESSION_META_INDEX_MAX_BYTES = 1024 * 1024;
+const REMINDER_HEADER_RE = /^\[miko_reminder at \d{4}-\d{2}-\d{2} \d{2}:\d{2}\]$/;
+
+/** English only/English only"*" = English only chat English only */
+export const PATROL_TOOLS_DEFAULT = "*";
+function splitLeadingSessionReminder(text: any) {
+  if (typeof text !== "string" || !text.startsWith(`${REMINDER_BLOCK_PREFIX} at `)) return null;
+  const firstNewline = text.indexOf("\n");
+  if (firstNewline < 0 || !REMINDER_HEADER_RE.test(text.slice(0, firstNewline).replace(/\r$/, ""))) return null;
+  const closingMarker = `\n${REMINDER_BLOCK_END}`;
+  const closingIndex = text.indexOf(closingMarker, firstNewline);
+  if (closingIndex < 0) return null;
+  const reminderEnd = closingIndex + closingMarker.length;
+  const reminder = text.slice(0, reminderEnd);
+  const remainder = text.slice(reminderEnd).replace(/^\r?\n\r?\n/, "");
+  return { reminder, remainder };
+}
+
+function detachReminderFromLatestUserMessage(messages: any) {
+  if (!Array.isArray(messages)) return { messages, reminder: null };
+  let userIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "user") {
+      userIndex = index;
+      break;
+    }
+  }
+  if (userIndex < 0) return { messages, reminder: null };
+
+  const message = messages[userIndex];
+  if (typeof message.content === "string") {
+    const split = splitLeadingSessionReminder(message.content);
+    if (!split) return { messages, reminder: null };
+    const next = [...messages];
+    next[userIndex] = { ...message, content: split.remainder };
+    return { messages: next, reminder: split.reminder };
+  }
+  if (Array.isArray(message.content) && message.content[0]?.type === "text") {
+    const split = splitLeadingSessionReminder(message.content[0].text);
+    if (!split) return { messages, reminder: null };
+    const next = [...messages];
+    next[userIndex] = {
+      ...message,
+      content: [{ ...message.content[0], text: split.remainder }, ...message.content.slice(1)],
+    };
+    return { messages: next, reminder: split.reminder };
+  }
+  return { messages, reminder: null };
+}
+
+function reattachReminderToLatestUserMessage(messages: any, reminder: any) {
+  if (!reminder || !Array.isArray(messages)) return messages;
+  const next = [...messages];
+  for (let index = next.length - 1; index >= 0; index -= 1) {
+    const message = next[index];
+    if (message?.role !== "user") continue;
+    if (typeof message.content === "string") {
+      next[index] = { ...message, content: `${reminder}\n\n${message.content}` };
+    } else if (Array.isArray(message.content) && message.content[0]?.type === "text") {
+      next[index] = {
+        ...message,
+        content: [
+          { ...message.content[0], text: `${reminder}\n\n${message.content[0].text}` },
+          ...message.content.slice(1),
+        ],
+      };
+    } else if (Array.isArray(message.content)) {
+      next[index] = {
+        ...message,
+        content: [{ type: "text", text: reminder }, ...message.content],
+      };
+    }
+    break;
+  }
+  return next;
+}
+
+function createReminderAwareTurnContextExtension(options: any) {
+  const extension = createSessionTurnContextExtension(options);
+  const baseHandler = extension.handlers.get("context")?.[0];
+  if (typeof baseHandler !== "function") return extension;
+  extension.handlers.set("context", [async (event: any) => {
+    const detached = detachReminderFromLatestUserMessage(event?.messages);
+    const result = await baseHandler({ ...event, messages: detached.messages });
+    if (!result?.messages || !detached.reminder) return result;
+    return {
+      ...result,
+      messages: reattachReminderToLatestUserMessage(result.messages, detached.reminder),
+    };
+  }]);
+  return extension;
+}
+
+function isPathInsideDir(parentDir: any, childPath: any) {
+  if (!parentDir || !childPath) return false;
+  const rel = path.relative(path.resolve(parentDir), path.resolve(childPath));
+  return rel === "" || (!!rel && !rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+function cacheContractDebugEnabled() {
+  return process.env.MIKO_CACHE_CONTRACT_DEBUG === "1";
+}
+
+function assertVideoInputSupported(model: any, videos: any) {
+  if (!videos?.length) return;
+  if (!modelSupportsVideoInput(model)) {
+    throw new Error("current model does not support video input");
+  }
+  if (!modelSupportsDirectVideoInput(model)) {
+    throw new Error("current provider does not support direct video input");
+  }
+}
+
+function assertAudioInputSupported(model: any, audios: any) {
+  if (!audios?.length) return;
+  if (!modelSupportsAudioInput(model)) {
+    throw new Error("current model does not support audio input");
+  }
+  if (!modelSupportsDirectAudioInput(model)) {
+    throw new Error("current provider does not support direct audio input");
+  }
+}
+
+function buildPromptMediaOptions(opts: any) {
+  const media = [
+    ...(opts?.images || []),
+    ...(opts?.videos || []),
+    ...(opts?.audios || []),
+  ];
+  if (!media.length) return undefined;
+  return {
+    images: media,
+    ...(opts.imageAttachmentPaths?.length ? { imageAttachmentPaths: opts.imageAttachmentPaths } : {}),
+    ...(opts.videoAttachmentPaths?.length ? { videoAttachmentPaths: opts.videoAttachmentPaths } : {}),
+    ...(opts.audioAttachmentPaths?.length ? { audioAttachmentPaths: opts.audioAttachmentPaths } : {}),
+  };
+}
+
+function normalizePluginSessionMeta({ ownerPluginId, sessionKind, sessionVisibility }: any = {}) {
+  const pluginId = typeof ownerPluginId === "string" && ownerPluginId.trim()
+    ? ownerPluginId.trim()
+    : null;
+  const kind = typeof sessionKind === "string" && sessionKind.trim()
+    ? sessionKind.trim()
+    : null;
+  const visibility = typeof sessionVisibility === "string" && sessionVisibility.trim()
+    ? sessionVisibility.trim()
+    : null;
+  if (!pluginId && !kind && !visibility) return null;
+  return {
+    ownerPluginId: pluginId,
+    kind,
+    visibility: visibility || "public",
+  };
+}
+
+function sessionMatchesListOptions(sessionLike, options: any = {}) {
+  const ownerPluginId = typeof options.ownerPluginId === "string" && options.ownerPluginId.trim()
+    ? options.ownerPluginId.trim()
+    : null;
+  const includePluginPrivate = options.includePluginPrivate === true;
+  const sessionOwnerPluginId = sessionLike?.ownerPluginId || null;
+  const visibility = sessionLike?.visibility || sessionLike?.sessionVisibility || "public";
+  if (ownerPluginId && sessionOwnerPluginId !== ownerPluginId) return false;
+  if (
+    (visibility === "plugin_private" || visibility === "private")
+    && !includePluginPrivate
+    && sessionOwnerPluginId !== ownerPluginId
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function extractPlainTextFromContent(content: any, { stripThink = false } = {}) {
+  let text = "";
+  if (typeof content === "string") {
+    text = content;
+  } else if (Array.isArray(content)) {
+    text = content
+      .filter(block => block?.type === "text" && typeof block.text === "string")
+      .map(block => block.text)
+      .join("");
+  }
+  if (!stripThink) return text;
+  return text.replace(/<think(?:ing)?>([\s\S]*?)<\/think(?:ing)?>\n*/g, "");
+}
+
+function timestampFromHistoryMessage(message: any, fallback = Date.now()) {
+  if (typeof message?.timestamp === "number" && Number.isFinite(message.timestamp)) return message.timestamp;
+  if (typeof message?.timestamp === "string") {
+    const parsed = Date.parse(message.timestamp);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
+}
+
+function activeToolDefinitionsFromSnapshot(allToolObjects: any, snapshotToolNames: any) {
+  const allowed = snapshotToolNames === null ? null : new Set(snapshotToolNames || []);
+  return (allToolObjects || [])
+    .filter((tool) => tool?.name && (allowed === null || allowed.has(tool.name)))
+    .map((tool) => ({
+      name: tool.name,
+      description: tool.description ?? "",
+      parameters: tool.parameters ?? tool.input_schema ?? tool.schema ?? null,
+    }));
+}
+
+function normalizeDeletedAgentTranscriptMessage(message: any) {
+  if (!message || typeof message !== "object") return null;
+  if (message.role === "compactionSummary") {
+    const text = textOrNull(message.summary) || extractPlainTextFromContent(message.content).trim();
+    if (!text) return null;
+    return {
+      role: "assistant",
+      content: [{ type: "text", text: `[English only]\n${text}` }],
+      timestamp: timestampFromHistoryMessage(message),
+    };
+  }
+  if (message.role !== "user" && message.role !== "assistant") return null;
+  const text = extractPlainTextFromContent(message.content, { stripThink: message.role === "assistant" }).trim();
+  if (!text) return null;
+  return {
+    role: message.role,
+    content: [{ type: "text", text }],
+    timestamp: timestampFromHistoryMessage(message),
+  };
+}
+
+function readSessionBranchMessages(sessionPath: any) {
+  const manager = SessionManager.open(sessionPath, path.dirname(sessionPath));
+  const branch = manager.getBranch();
+  const messages: any[] = [];
+  for (const entry of branch) {
+    if (entry?.type === "message" && (entry as any).message) {
+      messages.push({
+        ...(entry as any).message,
+        timestamp: (entry as any).message.timestamp ?? entry.timestamp ?? null,
+      });
+      continue;
+    }
+    if (entry?.type === "compaction" && textOrNull((entry as any).summary)) {
+      messages.push({
+        role: "compactionSummary",
+        summary: (entry as any).summary,
+        timestamp: (entry as any).timestamp ?? null,
+      });
+    }
+  }
+  return messages;
+}
+
+function textOrNull(value: any) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function deletedAgentContinuationError(code: string, message: string, status = 422) {
+  const err = new Error(`continueDeletedAgentSession: ${message}`);
+  (err as any).code = code;
+  (err as any).status = status;
+  return err;
+}
+
+function modelIdFromModel(model: any) {
+  return textOrNull(model?.id ?? model?.modelId);
+}
+
+function resolveAssistantUsageModel(modelMeta: any, fallbackModel: any, resolveModel: any) {
+  if (!modelMeta?.provider || !modelMeta?.modelId) return fallbackModel || null;
+  if (
+    fallbackModel?.provider === modelMeta.provider
+    && modelIdFromModel(fallbackModel) === modelMeta.modelId
+  ) {
+    return fallbackModel;
+  }
+  try {
+    const resolved = resolveModel?.({ id: modelMeta.modelId, provider: modelMeta.provider });
+    return resolved?.model || resolved || null;
+  } catch {
+    return null;
+  }
+}
+
+function modelMetaForAssistantUsage(message: any, fallbackModel: any, resolvedModel: any) {
+  return {
+    provider: textOrNull(message?.provider) ?? textOrNull(fallbackModel?.provider),
+    modelId: textOrNull(message?.model) ?? modelIdFromModel(fallbackModel),
+    api: textOrNull(message?.api) ?? textOrNull(resolvedModel?.api) ?? textOrNull(fallbackModel?.api),
+  };
+}
+
+function costRatesForAssistantUsage({ modelMeta, resolvedModel, fallbackModel }: any) {
+  if (!modelMeta?.provider || !modelMeta?.modelId) return fallbackModel?.cost ?? null;
+  return resolvedModel?.cost ?? null;
+}
+
+function recordAssistantUsage({ ledger, event, sessionPath, sessionId, agentId, model, source, attribution, resolveModel }: any) {
+  if (!ledger || event?.type !== "message_end" || event.message?.role !== "assistant") return null;
+  const initialModelMeta = {
+    provider: textOrNull(event.message?.provider) ?? textOrNull(model?.provider),
+    modelId: textOrNull(event.message?.model) ?? modelIdFromModel(model),
+  };
+  const resolvedModel = resolveAssistantUsageModel(initialModelMeta, model, resolveModel);
+  const modelMeta = modelMetaForAssistantUsage(event.message, model, resolvedModel);
+  const costRates = costRatesForAssistantUsage({ modelMeta, resolvedModel, fallbackModel: model });
+  const usageContext = {
+    source,
+    attribution: attribution || {
+      kind: "session",
+      agentId: agentId || null,
+      ...(sessionId ? { sessionId } : {}),
+      sessionPath,
+    },
+  };
+  if (event.message?.usage) {
+    return ledger.record({
+      model: modelMeta,
+      usage: event.message.usage,
+      usageContext,
+      costRates,
+    });
+  }
+  const errorMessage = event.message?.errorMessage || event.message?.error?.message || null;
+  if (event.message?.stopReason === "error" || errorMessage) {
+    const request = ledger.start({
+      model: modelMeta,
+      usageContext,
+      costRates,
+    });
+    return ledger.recordError(request.requestId, new Error(errorMessage || "provider request failed"));
+  }
+  return null;
+}
+
+function logDeepSeekReasoningVisibility({ event, model, sessionPath, agentId }: any) {
+  if (!isDeepSeekModel(model)) return;
+  const provider = textOrNull(model?.provider) || "deepseek";
+  const modelId = modelIdFromModel(model) || "unknown";
+  const sessionName = sessionPath ? path.basename(sessionPath) : "unknown";
+  if (event?.type !== "message_end" || event.message?.role !== "assistant") return;
+  const stats = collectThinkingVisibilityStats(event.message);
+  const usage = event.message?.usage || {};
+  const reasoningTokens = firstFiniteNumber(
+    usage.reasoningTokens,
+    usage.reasoning_tokens,
+    usage.output?.reasoningTokens,
+    usage.completion_tokens_details?.reasoning_tokens,
+  );
+  log.log(`[deepseek reasoning] event=message_end provider=${provider} model=${modelId} agent=${agentId || ""} session=${sessionName} thinkingBlocks=${stats.blocks} thinkingChars=${stats.chars} reasoningTokens=${reasoningTokens ?? ""} stopReason=${event.message?.stopReason || ""}`);
+}
+
+function collectThinkingVisibilityStats(message: any) {
+  const blocks = [];
+  const visit = (value) => {
+    if (!value) return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    if (typeof value !== "object") return;
+    const type = typeof value.type === "string" ? value.type : "";
+    if (type === "thinking" || type === "reasoning" || type === "reasoning_text") {
+      blocks.push(value);
+    }
+    for (const key of ["content", "thinking", "reasoning", "reasoningText", "text"]) {
+      if (key === "text" && type !== "thinking" && type !== "reasoning" && type !== "reasoning_text") continue;
+      const child = value[key];
+      if (child && typeof child === "object") visit(child);
+    }
+  };
+  visit(message?.content);
+  const chars = blocks.reduce((total, block) => (
+    total
+      + String(block.thinking ?? block.reasoning ?? block.reasoningText ?? block.text ?? block.content ?? "").length
+  ), 0);
+  return { blocks: blocks.length, chars };
+}
+
+function firstFiniteNumber(...values) {
+  for (const value of values) {
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function collectAssistantTextFromMessage(message: any) {
+  if (!message) return "";
+  if (typeof message.text === "string") return message.text;
+  if (typeof message.content === "string") return message.content;
+  if (!Array.isArray(message.content)) return "";
+  return message.content
+    .map((part) => {
+      if (!part || typeof part !== "object") return "";
+      if (typeof part.text === "string") return part.text;
+      if (typeof part.content === "string") return part.content;
+      return "";
+    })
+    .filter(Boolean)
+    .join("");
+}
+
+function addUniqueSessionFile(target: any[], file: any) {
+  if (!file || typeof file !== "object") return;
+  const key = file.id || file.fileId || file.filePath || file.path || file.realPath || JSON.stringify(file);
+  if (target.some((existing) => (
+    (existing.id || existing.fileId || existing.filePath || existing.path || existing.realPath || JSON.stringify(existing)) === key
+  ))) {
+    return;
+  }
+  target.push(file);
+}
+
+function collectSessionFilesFromToolResult(result: any) {
+  const files = [];
+  const details = result?.details;
+  addUniqueSessionFile(files, details?.sessionFile);
+  if (Array.isArray(details?.sessionFiles)) {
+    for (const file of details.sessionFiles) addUniqueSessionFile(files, file);
+  }
+  return files;
+}
+
+function toolErrorSummary(event: any) {
+  const toolName = event?.toolName || event?.name || "tool";
+  const raw = event?.error || event?.result?.error || event?.result?.message || event?.message;
+  const message = typeof raw === "string" ? raw : raw?.message || "";
+  return message ? `${toolName}: ${message}` : `${toolName}: failed`;
+}
+
+function isolatedCompletionError(stopReason: any, errorMessage: any) {
+  if (!stopReason || stopReason === "stop") return null;
+  const message = typeof errorMessage === "string" ? errorMessage : errorMessage?.message;
+  if (stopReason === "error") {
+    return message || "assistant message ended with stopReason=error";
+  }
+  if (stopReason === "length") {
+    return "assistant message ended with stopReason=length (output limit reached)";
+  }
+  return `assistant message ended with stopReason=${stopReason}`;
+}
+
+const MAX_CACHED_SESSIONS = 20;
+const MiB = 1024 * 1024;
+const DEFAULT_RUNTIME_PRESSURE_THRESHOLDS = Object.freeze({
+  checkDelayMs: 1500,
+  minRetainedBytes: 16 * MiB,
+  highPayloadBytes: 64 * MiB,
+  highRssBytes: 1536 * MiB,
+  highExternalBytes: 512 * MiB,
+});
+
+function normalizeMemoryPressureOptions(raw: any) {
+  if (raw === false || raw?.enabled === false) {
+    return {
+      enabled: false,
+      getMemoryUsage: () => process.memoryUsage(),
+      thresholds: DEFAULT_RUNTIME_PRESSURE_THRESHOLDS,
+    };
+  }
+  return {
+    enabled: true,
+    getMemoryUsage: typeof raw?.getMemoryUsage === "function"
+      ? raw.getMemoryUsage
+      : () => process.memoryUsage(),
+    thresholds: {
+      ...DEFAULT_RUNTIME_PRESSURE_THRESHOLDS,
+      ...(raw?.thresholds || {}),
+    },
+  };
+}
+
+function estimateSessionRuntimeRetainedBytes(session: any) {
+  const seen = new WeakSet();
+  const stateMessages = session?.agent?.state?.messages;
+  const messages = Array.isArray(session?.messages)
+    ? session.messages
+    : Array.isArray(stateMessages)
+      ? stateMessages
+      : [];
+  return estimateRetainedValueBytes(messages, seen, { count: 0 });
+}
+
+function estimateRetainedValueBytes(value: any, seen: WeakSet<any>, budget: any, depth = 0) {
+  if (value == null || depth > 10 || budget.count > 20_000) return 0;
+  budget.count += 1;
+
+  if (typeof value === "string") {
+    return value.length >= 8192 ? value.length : 0;
+  }
+  if (typeof value !== "object") return 0;
+  if (seen.has(value)) return 0;
+  seen.add(value);
+
+  let total = 0;
+  if (Array.isArray(value)) {
+    for (const item of value) total += estimateRetainedValueBytes(item, seen, budget, depth + 1);
+    return total;
+  }
+
+  if ((value.type === "image" || value.type === "video") && typeof value.data === "string") {
+    total += value.data.length;
+  }
+  if ((value.type === "image" || value.type === "video") && typeof value.source?.data === "string") {
+    total += value.source.data.length;
+  }
+
+  for (const [key, child] of Object.entries(value)) {
+    if ((value.type === "image" || value.type === "video") && (key === "data" || key === "source")) {
+      continue;
+    }
+    total += estimateRetainedValueBytes(child, seen, budget, depth + 1);
+  }
+  return total;
+}
+
+function makeBackgroundTaskPrompt(locale: any) {
+  const isZh = String(locale || "").startsWith("zh");
+  return isZh
+    ? `## English only
+
+English only subagent English only
+
+1. English only
+2. English only check_pending_tasks English only
+3. English only
+4. English only <miko-background-result> English only Bridge English only <miko-background-result> English only UI English only`
+    : `## Background Tasks
+
+After dispatching subagent or other background tasks:
+
+1. Continue with any remaining work first — do not stop immediately to wait
+2. Once your other work is done, call check_pending_tasks to check status
+3. If tasks are still pending, do not poll or wait; tell the user the task is still running and will be handled in the background
+4. Only background tasks that need your follow-up are delivered via <miko-background-result> messages. Successful media generation is handled by the UI and Bridge automatically; do not wait for it or ask about it again. Failed media generation may be delivered via <miko-background-result>: explain only why it failed, then ask whether the user wants you to create a new image. In-place regeneration is a UI-only action for the user`;
+}
+
+function buildAppendSystemPromptSnapshot({
+  baseAppend,
+  providerPromptPatches,
+  hasDeferredResultStore,
+  locale,
+  workspaceScope,
+  workspaceContext,
+}: any) {
+  const parts = [
+    ...(Array.isArray(baseAppend) ? baseAppend : []),
+    ...(Array.isArray(providerPromptPatches) ? providerPromptPatches : []),
+  ];
+  if (hasDeferredResultStore) {
+    parts.push(makeBackgroundTaskPrompt(locale));
+  }
+  const workspacePrompt = formatWorkspaceScopePrompt({
+    primaryCwd: workspaceScope.primaryCwd,
+    workspaceFolders: workspaceScope.workspaceFolders,
+    locale,
+  });
+  if (workspacePrompt) parts.push(workspacePrompt);
+  const workspaceInstructions = buildWorkspaceInstructionPrompt({
+    cwd: workspaceScope.primaryCwd,
+    workspaceContext,
+    locale,
+  });
+  if (workspaceInstructions) parts.push(workspaceInstructions);
+  return normalizeStringArray(parts);
+}
+
+function readDeepSeekRoleplayExperimentFlag(prefs: any) {
+  return getResolvedExperimentValue(prefs, DEEPSEEK_ROLEPLAY_REASONING_PATCH_EXPERIMENT_ID) === true;
+}
+
+function normalizeOptionalText(value: any) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeDeepSeekRoleplayReasoningContext(value: any) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const locale = normalizeOptionalText(value.locale);
+  const agentName = normalizeOptionalText(value.agentName);
+  const agentDescription = normalizePlainDescription(value.agentDescription || "", 160);
+  if (!locale && !agentName && !agentDescription) return null;
+  return {
+    ...(locale ? { locale } : {}),
+    ...(agentName ? { agentName } : {}),
+    ...(agentDescription ? { agentDescription } : {}),
+  };
+}
+
+function readAgentRosterDescription(agent: any) {
+  if (agent?.agentDir) {
+    try {
+      const raw = fs.readFileSync(path.join(agent.agentDir, "description.md"), "utf-8");
+      const withoutHash = raw.split(/\r?\n/)
+        .filter((line) => !line.trim().startsWith("<!--"))
+        .join("\n");
+      const description = normalizePlainDescription(withoutHash, 160);
+      if (description) return description;
+    } catch {}
+  }
+  return "";
+}
+
+function buildDeepSeekRoleplayReasoningContext(agent: any) {
+  return normalizeDeepSeekRoleplayReasoningContext({
+    locale: agent?.config?.locale || getLocale(),
+    agentName: agent?.agentName || agent?.name || agent?.config?.agent?.name || agent?.id,
+    agentDescription: readAgentRosterDescription(agent),
+  });
+}
+
+function normalizeSessionExperimentFlags(value: any) {
+  const context = normalizeDeepSeekRoleplayReasoningContext(value?.deepseekRoleplayReasoningContext);
+  return {
+    deepseekRoleplayReasoningPatch: value?.deepseekRoleplayReasoningPatch === true,
+    ...(context ? { deepseekRoleplayReasoningContext: context } : {}),
+  };
+}
+
+function sessionExperimentFlagsForMeta(value: any) {
+  const flags = normalizeSessionExperimentFlags(value);
+  return flags.deepseekRoleplayReasoningPatch === true ? flags : null;
+}
+
+function hasSessionPermissionModeFields(value: any) {
+  return !!value && typeof value === "object" && (
+    typeof value.permissionMode === "string"
+    || typeof value.accessMode === "string"
+    || value.planMode === true
+  );
+}
+
+function normalizeSessionWorkspaceMount(value: any) {
+  const mountId = typeof value?.workspaceMountId === "string" && value.workspaceMountId.trim()
+    ? value.workspaceMountId.trim()
+    : (typeof value?.mountId === "string" && value.mountId.trim() ? value.mountId.trim() : null);
+  if (!mountId) return null;
+  const label = typeof value?.workspaceLabel === "string" && value.workspaceLabel.trim()
+    ? value.workspaceLabel.trim()
+    : (typeof value?.label === "string" && value.label.trim() ? value.label.trim() : null);
+  return {
+    mountId,
+    label,
+  };
+}
+
+export class SessionCoordinator {
+  declare _d: any;
+  declare _pendingModel: any;
+  declare _session: any;
+  declare _currentSessionPath: string;
+  declare _sessionStarted: boolean;
+  declare _sessions: Map<string, any>;
+  declare _hibernatedSessionMeta: Map<string, any>;
+  declare _runtimePressureTimers: Map<string, any>;
+  declare _memoryPressure: any;
+  declare _headlessOps: Set<string>;
+  declare _titlesCache: Map<string, any>;
+  declare _metaCache: Map<string, any>;
+  declare _sessionListProjectionCache: SessionListProjectionCache;
+  declare _pendingPermissionMode: any;
+  declare _runtimePermissionModeDefault: any;
+  declare _metaWriteQueue: Promise<any>;
+  declare _prePromptAbortControllers: Map<string, AbortController>;
+  declare _turnContextBySession: Map<string, any>;
+  declare _sessionManifestStore: any;
+  declare _envChangeLedger: any;
+
+  /**
+   * @param {object} deps
+   * @param {string} deps.agentsDir
+   * @param {() => object} deps.getAgent - English only agent
+   * @param {() => string} deps.getActiveAgentId
+   * @param {() => import('./model-manager.ts').ModelManager} deps.getModels
+   * @param {() => object} deps.getResourceLoader
+   * @param {() => import('./skill-manager.ts').SkillManager} deps.getSkills
+   * @param {(cwd, customTools?, opts?) => object} deps.buildTools
+   * @param {(event, sp) => void} deps.emitEvent
+   * @param {() => string|null} deps.getHomeCwd
+   * @param {(path) => string|null} deps.agentIdFromSessionPathEnglish only resolveSessionOwnership English only manifest bootstrap English only
+   * @param {(id) => Promise} deps.switchAgentOnly - English only agent English only
+   * @param {() => object} deps.getConfig
+   * @param {() => Map} deps.getAgents
+   * @param {(agentId) => object} deps.getActivityStore
+   * @param {(agentId) => object|null} deps.getAgentById
+   * @param {() => object} deps.listAgents - English only agent
+   * @param {(cwd: string, context: {agent: object, agentId: string}) => Promise<{workspacePaths?: object[]}|void>} [deps.onBeforeSessionCreate]
+   * @param {(sessionPath: string, reason: string) => void|Promise<void>} [deps.onSessionRuntimeDiscarded]
+   * @param {(sessionPath: string) => string|null} [deps.getSessionIdForPath]
+   * @param {(sessionRef: {sessionId: string, sessionPath?: string}, reason: string) => object} [deps.abortToolExecutionsForSession]
+   */
+  constructor(deps: any) {
+    this._d = deps;
+    this._pendingModel = null;
+    this._session = null;
+    this._currentSessionPath = null;
+    this._sessionStarted = false;
+    this._sessions = new Map();
+    this._hibernatedSessionMeta = new Map();
+    this._runtimePressureTimers = new Map();
+    this._memoryPressure = normalizeMemoryPressureOptions(deps.memoryPressure);
+    this._headlessOps = new Set();
+    this._titlesCache = new Map(); // sessionDir → { titles, ts }
+    this._metaCache = new Map();   // metaPath → { data, ts }
+    this._sessionListProjectionCache = deps.sessionListProjectionCache || new SessionListProjectionCache();
+    this._pendingPermissionMode = null;
+    this._runtimePermissionModeDefault = null;
+    this._metaWriteQueue = Promise.resolve();
+    this._prePromptAbortControllers = new Map();
+    this._turnContextBySession = new Map();
+    this._sessionManifestStore = deps.sessionManifestStore || null;
+    this._envChangeLedger = deps.envChangeLedger || null;
+  }
+
+  static _TITLES_TTL = 60_000; // 60 English only
+
+  get session() { return this._session; }
+  get sessionStarted() { return this._sessionStarted; }
+  get sessions() { return this._sessions; }
+
+  setPendingModel(model: any) { this._pendingModel = model; }
+  get pendingModel() { return this._pendingModel; }
+
+  _getDefaultThinkingLevelForModel(model = null) {
+    const models = this._d.getModels();
+    const fallback = normalizeSessionThinkingLevel(this._d.getPrefs().getThinkingLevel());
+    const targetModel = model || this._pendingModel || models?.currentModel || null;
+    if (typeof models?.getModelDefaultThinkingLevel === "function") {
+      return models.getModelDefaultThinkingLevel(targetModel, fallback);
+    }
+    return resolveModelDefaultThinkingLevel(targetModel, fallback);
+  }
+
+  getDefaultThinkingLevel() {
+    return this._getDefaultThinkingLevelForModel();
+  }
+
+  async setDefaultThinkingLevel(level: any) {
+    const models = this._d.getModels();
+    const fallback = normalizeSessionThinkingLevel(this._d.getPrefs().getThinkingLevel());
+    const targetModel = this._pendingModel || models?.currentModel || null;
+    if (!targetModel?.id || !targetModel.provider) {
+      return { ok: false, error: "model not found", thinkingLevel: fallback };
+    }
+    if (typeof models.setModelDefaultThinkingLevel !== "function") {
+      return { ok: false, error: "model thinking defaults unavailable", thinkingLevel: fallback };
+    }
+    const result = await models.setModelDefaultThinkingLevel(targetModel, level);
+    if (
+      this._pendingModel
+      && result?.model?.id === this._pendingModel.id
+      && result.model.provider === this._pendingModel.provider
+    ) {
+      this._pendingModel = result.model;
+    }
+    return {
+      ok: true,
+      thinkingLevel: normalizeSessionThinkingLevel(result?.thinkingLevel),
+    };
+  }
+
+  get currentSessionPath() {
+    return this._session?.sessionManager?.getSessionFile?.() ?? this._currentSessionPath ?? null;
+  }
+
+  _resolveSessionManifestForPath(sessionPath: any) {
+    if (!this._sessionManifestStore || !sessionPath) return null;
+    return this._sessionManifestStore.resolveByLocatorPath(sessionPath);
+  }
+
+  _resolveSessionManifestForId(sessionId: any) {
+    if (!this._sessionManifestStore || !sessionId) return null;
+    return this._sessionManifestStore.getBySessionId(sessionId);
+  }
+
+  _normalizeSessionRef(ref: any) {
+    if (typeof ref === "string") return { sessionId: null, sessionPath: ref };
+    if (!ref || typeof ref !== "object") return { sessionId: null, sessionPath: null };
+    const sessionId = typeof ref.sessionId === "string" && ref.sessionId.trim()
+      ? ref.sessionId.trim()
+      : null;
+    const sessionPath = typeof ref.sessionPath === "string" && ref.sessionPath.trim()
+      ? ref.sessionPath
+      : typeof ref.path === "string" && ref.path.trim()
+        ? ref.path
+        : null;
+    return { sessionId, sessionPath };
+  }
+
+  _resolveSessionWriteRef(ref: any, operation: string) {
+    const normalized = this._normalizeSessionRef(ref);
+    if (normalized.sessionId) {
+      const manifest = this._resolveSessionManifestForId(normalized.sessionId);
+      const sessionPath = manifest?.currentLocator?.path || null;
+      if (!sessionPath) {
+        const error: any = new Error(`${operation}: session manifest not found for ${normalized.sessionId}`);
+        error.code = "session_manifest_not_found";
+        error.status = 404;
+        throw error;
+      }
+      return {
+        sessionId: normalized.sessionId,
+        sessionPath,
+        manifest,
+      };
+    }
+    if (!normalized.sessionPath) {
+      throw new Error(`${operation}: sessionPath is required`);
+    }
+    const manifest = this._resolveSessionManifestForPath(normalized.sessionPath);
+    return {
+      sessionId: manifest?.sessionId || null,
+      sessionPath: normalized.sessionPath,
+      manifest,
+    };
+  }
+
+  _ensureSessionManifestForPath(sessionPath: any, input: any = {}) {
+    if (!this._sessionManifestStore || !sessionPath) return null;
+    const existing = this._sessionManifestStore.resolveByLocatorPath(sessionPath);
+    if (existing) return existing;
+    return this._sessionManifestStore.createForPath({
+      sessionPath,
+      ...input,
+    });
+  }
+
+  _sessionIdForPath(sessionPath: any) {
+    try {
+      return this._resolveSessionManifestForPath(sessionPath)?.sessionId || null;
+    } catch (err) {
+      log.warn(`session manifest lookup failed for ${path.basename(sessionPath || "")}: ${err?.message || err}`);
+      return null;
+    }
+  }
+
+  /** English only/English onlymanifest English only nullEnglish only#414 English only */
+  _resolveSessionManifestForPathQuiet(sessionPath: any) {
+    try {
+      return this._resolveSessionManifestForPath(sessionPath);
+    } catch (err) {
+      log.warn(`session manifest lookup failed for ${path.basename(sessionPath || "")}: ${err?.message || err}`);
+      return null;
+    }
+  }
+
+  _makeSessionLocatorStateError(operation: string, sessionPath: any, manifest: any) {
+    const lifecycle = manifest?.lifecycle || "unknown";
+    const currentPath = manifest?.currentLocator?.path || null;
+    const error: any = new Error(
+      `${operation}: session path is not runnable because its current lifecycle is ${lifecycle}`
+      + (currentPath ? ` at ${currentPath}` : "")
+      + `; requested ${sessionPath}`,
+    );
+    error.code = "session_locator_not_active";
+    error.status = 409;
+    error.sessionId = manifest?.sessionId || null;
+    error.currentPath = currentPath;
+    error.lifecycle = lifecycle;
+    return error;
+  }
+
+  _assertCurrentActiveSessionLocator(sessionPath: any, operation: string) {
+    if (!sessionPath) return null;
+    const manifest = this._resolveSessionManifestForPath(sessionPath);
+    if (!manifest) return null;
+    const currentPath = manifest.currentLocator?.path;
+    const requestedPath = path.resolve(sessionPath);
+    if (manifest.lifecycle && manifest.lifecycle !== "active") {
+      throw this._makeSessionLocatorStateError(operation, sessionPath, manifest);
+    }
+    if (currentPath && path.resolve(currentPath) !== requestedPath) {
+      throw this._makeSessionLocatorStateError(operation, sessionPath, manifest);
+    }
+    return manifest;
+  }
+
+  _isCurrentActiveSessionLocator(sessionPath: any) {
+    try {
+      const manifest = this._resolveSessionManifestForPath(sessionPath);
+      if (!manifest) return true;
+      if (manifest.lifecycle && manifest.lifecycle !== "active") return false;
+      const currentPath = manifest.currentLocator?.path;
+      return !currentPath || path.resolve(currentPath) === path.resolve(sessionPath);
+    } catch {
+      return false;
+    }
+  }
+
+  async moveSessionLifecycle({ fromPath = null, toPath = null, lifecycle = null, reason = "session_lifecycle", manifestDefaults = {} }: any = {}) {
+    if (!this._sessionManifestStore || typeof this._sessionManifestStore.updateLocatorLifecycle !== "function") {
+      const error: any = new Error("Session manifest lifecycle transition is unavailable.");
+      error.code = "session_manifest_unavailable";
+      error.status = 503;
+      throw error;
+    }
+    if (!toPath) {
+      const error: any = new Error("moveSessionLifecycle: toPath is required");
+      error.code = "session_lifecycle_path_required";
+      error.status = 400;
+      throw error;
+    }
+    if (lifecycle !== "active" && lifecycle !== "archived" && lifecycle !== "deleted") {
+      const error: any = new Error(`moveSessionLifecycle: unsupported lifecycle ${lifecycle || "(empty)"}`);
+      error.code = "session_lifecycle_invalid";
+      error.status = 400;
+      throw error;
+    }
+
+    let manifest = null;
+    for (const candidate of [fromPath, toPath]) {
+      if (!candidate) continue;
+      manifest = this._resolveSessionManifestForPath(candidate);
+      if (manifest) break;
+    }
+    if (!manifest) {
+      const seedPath = fromPath || toPath;
+      const initialLifecycle = isArchivedDesktopSessionPath(seedPath, this._d.agentsDir) ? "archived" : "active";
+      manifest = this._ensureSessionManifestForPath(seedPath, {
+        ownerAgentId: this._d.agentIdFromSessionPath?.(seedPath) || null,
+        domain: "desktop",
+        kind: "chat",
+        lifecycle: initialLifecycle,
+        provenance: { createdBy: "session_lifecycle_transition" },
+        locatorReason: reason,
+        ...(manifestDefaults || {}),
+      });
+    }
+    if (!manifest?.sessionId) {
+      const error: any = new Error("moveSessionLifecycle: session manifest could not be established");
+      error.code = "session_manifest_not_found";
+      error.status = 404;
+      throw error;
+    }
+
+    const classification = {
+      domain: manifestDefaults?.domain,
+      kind: manifestDefaults?.kind,
+    };
+    const updated = classification.domain || classification.kind
+      ? this._sessionManifestStore.updateLocatorLifecycle(
+        manifest.sessionId,
+        toPath,
+        lifecycle,
+        reason,
+        classification,
+      )
+      : this._sessionManifestStore.updateLocatorLifecycle(
+        manifest.sessionId,
+        toPath,
+        lifecycle,
+        reason,
+      );
+    if (!updated?.currentLocator?.path || path.resolve(updated.currentLocator.path) !== path.resolve(toPath) || updated.lifecycle !== lifecycle) {
+      const error: any = new Error("moveSessionLifecycle: manifest transition verification failed");
+      error.code = "session_lifecycle_transition_failed";
+      error.status = 500;
+      error.sessionId = manifest.sessionId;
+      error.toPath = toPath;
+      error.lifecycle = lifecycle;
+      throw error;
+    }
+    return updated;
+  }
+
+  _readSessionCapabilitySnapshot(sessionPath: any) {
+    if (!this._sessionManifestStore || !sessionPath) return null;
+    try {
+      const manifest = this._resolveSessionManifestForPath(sessionPath);
+      if (!manifest?.sessionId || typeof this._sessionManifestStore.getCapabilitySnapshot !== "function") return null;
+      return this._sessionManifestStore.getCapabilitySnapshot(manifest.sessionId);
+    } catch (err) {
+      log.warn(`session capability snapshot read failed for ${path.basename(sessionPath || "")}: ${err?.message || err}`);
+      return null;
+    }
+  }
+
+  _writeSessionCapabilitySnapshot(sessionPath: any, partial: any, source = "session_meta_write") {
+    if (!this._sessionManifestStore || !sessionPath || !partial || typeof partial !== "object") return;
+    if (typeof this._sessionManifestStore.setCapabilitySnapshot !== "function") return;
+    const snapshot: any = {};
+    if (Object.prototype.hasOwnProperty.call(partial, "toolNames")) {
+      snapshot.toolNames = partial.toolNames;
+    }
+    if (Object.prototype.hasOwnProperty.call(partial, "promptSnapshot")) {
+      snapshot.promptSnapshot = partial.promptSnapshot;
+    }
+    if (Object.prototype.hasOwnProperty.call(partial, "capabilityDriftDismissedFingerprint")) {
+      snapshot.capabilityDriftDismissedFingerprint = partial.capabilityDriftDismissedFingerprint;
+    }
+    if (Object.keys(snapshot).length === 0) return;
+    try {
+      const manifest = this._resolveSessionManifestForPath(sessionPath);
+      if (!manifest?.sessionId) return;
+      this._sessionManifestStore.setCapabilitySnapshot(manifest.sessionId, snapshot, { source });
+    } catch (err) {
+      log.warn(`session capability snapshot write failed for ${path.basename(sessionPath || "")}: ${err?.message || err}`);
+    }
+  }
+
+  getSessionExecutorMetadata(ref: any) {
+    if (!this._sessionManifestStore || typeof this._sessionManifestStore.getExecutorMetadata !== "function") return null;
+    try {
+      const normalized = this._normalizeSessionRef(ref);
+      const sessionId = normalized.sessionId
+        || (normalized.sessionPath ? this._resolveSessionManifestForPath(normalized.sessionPath)?.sessionId : null);
+      return sessionId ? this._sessionManifestStore.getExecutorMetadata(sessionId) : null;
+    } catch (err) {
+      log.warn(`session executor metadata read failed: ${err?.message || err}`);
+      return null;
+    }
+  }
+
+  setSessionExecutorMetadata(ref: any, metadata: any, options: any = {}) {
+    if (!this._sessionManifestStore || typeof this._sessionManifestStore.setExecutorMetadata !== "function") return null;
+    const normalized = this._normalizeSessionRef(ref);
+    let manifest = null;
+    if (normalized.sessionId) {
+      manifest = this._resolveSessionManifestForId(normalized.sessionId);
+    } else if (normalized.sessionPath) {
+      manifest = this._resolveSessionManifestForPath(normalized.sessionPath)
+        || this._ensureSessionManifestForPath(normalized.sessionPath, {
+          ownerAgentId: this._d.agentIdFromSessionPath?.(normalized.sessionPath) || null,
+          domain: "desktop",
+          kind: options.kind || "chat",
+          provenance: { createdBy: options.provenance || "session_executor_metadata" },
+          locatorReason: options.locatorReason || "session_executor_metadata",
+          ...(options.manifestDefaults || {}),
+        });
+    }
+    if (!manifest?.sessionId) return null;
+    try {
+      return this._sessionManifestStore.setExecutorMetadata(
+        manifest.sessionId,
+        metadata,
+        { source: options.source || "subagent_runtime" },
+      );
+    } catch (err) {
+      log.warn(`session executor metadata write failed: ${err?.message || err}`);
+      return null;
+    }
+  }
+
+  _sessionTitleKeyForPath(sessionPath: any) {
+    return this._sessionIdForPath(sessionPath) || sessionPath;
+  }
+
+  _sessionTitleFromMap(titles: any, sessionPath: any, extraLegacyPaths: any[] = []) {
+    if (!titles || !sessionPath) return null;
+    const keys: string[] = [];
+    for (const candidate of [sessionPath, ...extraLegacyPaths]) {
+      if (!candidate) continue;
+      const sessionId = this._sessionIdForPath(candidate);
+      if (sessionId) keys.push(sessionId);
+      keys.push(candidate);
+      keys.push(path.basename(candidate));
+    }
+    for (const key of [...new Set(keys)]) {
+      if (Object.prototype.hasOwnProperty.call(titles, key) && titles[key]) return titles[key];
+    }
+    return null;
+  }
+
+  _sessionRuntimeKeyForPath(sessionPath: any, opts: any = {}) {
+    if (!sessionPath) return null;
+    if (!this._sessionManifestStore) return sessionPath;
+    try {
+      const manifest = opts.create === true
+        ? this._ensureSessionManifestForPath(sessionPath, opts.manifestDefaults || {})
+        : this._resolveSessionManifestForPath(sessionPath);
+      return manifest?.sessionId || sessionPath;
+    } catch (err) {
+      if (opts.warn !== false) {
+        log.warn(`session runtime key lookup failed for ${path.basename(sessionPath || "")}: ${err?.message || err}`);
+      }
+      return sessionPath;
+    }
+  }
+
+  _sessionPathForEntry(entry: any, fallbackKey: any = null) {
+    return entry?.sessionPath
+      || entry?.session?.sessionManager?.getSessionFile?.()
+      || (typeof fallbackKey === "string" && isSessionJsonlFilename(path.basename(fallbackKey)) ? fallbackKey : null);
+  }
+
+  _getSessionEntryByPath(sessionPath: any) {
+    const key = this._sessionRuntimeKeyForPath(sessionPath, { warn: false });
+    if (!key) return null;
+    return this._sessions.get(key) || (key !== sessionPath ? this._sessions.get(sessionPath) : null) || null;
+  }
+
+  _setRuntimeValueForPath(map: Map<string, any>, sessionPath: any, value: any, opts: any = {}) {
+    const key = this._sessionRuntimeKeyForPath(sessionPath, opts);
+    if (!key) return null;
+    map.set(key, value);
+    if (key !== sessionPath) map.delete(sessionPath);
+    return key;
+  }
+
+  _getRuntimeValueForPath(map: Map<string, any>, sessionPath: any) {
+    const key = this._sessionRuntimeKeyForPath(sessionPath, { warn: false });
+    if (!key) return null;
+    return map.get(key) || (key !== sessionPath ? map.get(sessionPath) : null) || null;
+  }
+
+  _deleteRuntimeValueForPath(map: Map<string, any>, sessionPath: any) {
+    const key = this._sessionRuntimeKeyForPath(sessionPath, { warn: false });
+    if (!key) return false;
+    const deleted = map.delete(key);
+    const legacyDeleted = key !== sessionPath ? map.delete(sessionPath) : false;
+    return deleted || legacyDeleted;
+  }
+
+  _hasRuntimeValueForPath(map: Map<string, any>, sessionPath: any) {
+    const key = this._sessionRuntimeKeyForPath(sessionPath, { warn: false });
+    if (!key) return false;
+    return map.has(key) || (key !== sessionPath && map.has(sessionPath));
+  }
+
+  buildSessionCacheSnapshot(sessionPath: any, { reason = "unknown", messages = null }: any = {}) {
+    const entry = this._getSessionEntryByPath(sessionPath);
+    if (!entry?.session) {
+      throw new Error(`Session cache snapshot unavailable: unknown session ${sessionPath || "(empty)"}`);
+    }
+    const session = entry.session;
+    const state = session.agent?.state || {};
+    return buildSessionCacheSnapshotValue({
+      sessionPath,
+      reason,
+      model: session.model || state.model || null,
+      cacheKeyParams: {
+        thinkingLevel: entry.thinkingLevel || state.thinkingLevel || session.thinkingLevel || "off",
+      },
+      systemPrompt: this._getFinalSystemPrompt(session) ?? state.systemPrompt ?? "",
+      tools: entry.activeToolDefinitions || [],
+      messages: Array.isArray(messages) ? messages : (Array.isArray(state.messages) ? state.messages : []),
+    });
+  }
+
+  getSessionStreamFn(sessionPath: any) {
+    const entry = this._getSessionEntryByPath(sessionPath);
+    return entry?.session?.agent?.streamFn || null;
+  }
+
+  // ── Session English only / English only ──
+
+  async createSession(sessionMgr: any, cwd: any, memoryEnabled = true, model: any = null, {
+    restore = false,
+    agent: explicitAgent = null,
+    agentId: explicitAgentId = null,
+    preserveAgentMemoryState = false,
+    workspaceFolders = [],
+    authorizedFolders = [],
+    visibleInSessionList = false,
+    thinkingLevel = null,
+    workspaceMountId = null,
+    workspaceLabel = null,
+    ownerPluginId = null,
+    sessionKind = null,
+    sessionVisibility = null,
+    // #1624 English onlyfresh compactEnglish onlyrestore English only promptSnapshot/toolNamesEnglish only
+    // English only agent English only trueEnglish only
+    refreshCapabilitySnapshots = false,
+    reminderState = null,
+  }: any = {}) {
+    const t0 = Date.now();
+    const agent = explicitAgent
+      || (explicitAgentId ? this._d.getAgentById?.(explicitAgentId) : null)
+      || this._d.getAgent();
+    if (!agent) {
+      throw new Error("createSession: target agent unavailable");
+    }
+    const ownerAgentId = explicitAgentId || agent.id || this._d.getActiveAgentId();
+    const configuredHomeCwd = this._d.getHomeCwd(agent.id);
+    const effectiveCwd = cwd || configuredHomeCwd || process.cwd();
+    if (!restore && !cwd && isDefaultWorkspacePath(configuredHomeCwd) && isDefaultWorkspacePath(effectiveCwd)) {
+      restoreDefaultWorkspaceIfMissing(effectiveCwd);
+    }
+    const models = this._d.getModels();
+    // restore English only modelEnglish only PI SDK English only JSONL English onlysession model English only
+    const effectiveModel = restore ? null : (model || this._pendingModel || models.currentModel);
+    this._pendingModel = null;
+    log.log(`createSession cwd=${effectiveCwd} restore=${restore} (English only: ${cwd || "English only"})`);
+
+    const workspaceSkillContext = await this._d.onBeforeSessionCreate?.(effectiveCwd, {
+      agent,
+      agentId: ownerAgentId,
+    });
+
+    if (!restore && !effectiveModel) {
+      throw new Error(t("error.noAvailableModel"));
+    }
+    if (!sessionMgr) {
+      sessionMgr = SessionManager.create(effectiveCwd, agent.sessionDir);
+    }
+    const sessionPathForMeta = sessionMgr.getSessionFile?.() || null;
+    let restoredCapabilitySnapshot = restore && sessionPathForMeta
+      ? this._readSessionCapabilitySnapshot(sessionPathForMeta)
+      : null;
+    let restoredThinkingLevel = null;
+    if (restore && sessionPathForMeta) {
+      try {
+        const metaPath = path.join(agent.sessionDir, "session-meta.json");
+        const meta = await this._readMetaCached(metaPath);
+        const metaEntry = meta[path.basename(sessionPathForMeta)];
+        if (typeof metaEntry?.thinkingLevel === "string") {
+          restoredThinkingLevel = metaEntry.thinkingLevel;
+        }
+      } catch (err) {
+        if (err.code !== "ENOENT") {
+          log.warn(`session thinking level restore failed: ${err.message}`);
+        }
+      }
+    }
+    // #1624 refreshCapabilitySnapshotsEnglish only promptSnapshotEnglish only fresh-build
+    // English only metaPatch English only !restoredPromptSnapshot English only
+    const restoredPromptSnapshot = restore && sessionPathForMeta && !refreshCapabilitySnapshots
+      ? (
+        normalizeSessionPromptSnapshot(restoredCapabilitySnapshot?.promptSnapshot)
+        || await this._readSessionPromptSnapshot(agent, sessionPathForMeta)
+      )
+      : null;
+    let restoredSessionModelRef = null;
+    if (restore) {
+      try {
+        restoredSessionModelRef = sessionMgr?.buildSessionContext?.()?.model || null;
+      } catch (err) {
+        log.warn(`restore model ref read failed: ${err.message}`);
+      }
+      if (restoredSessionModelRef?.provider && restoredSessionModelRef?.modelId
+        && !findModel(models.availableModels, restoredSessionModelRef.modelId, restoredSessionModelRef.provider)) {
+        throw new Error(t("error.modelNotFound", {
+          id: `${restoredSessionModelRef.provider}/${restoredSessionModelRef.modelId}`,
+        }));
+      }
+    }
+    const restoredPromptModel = restore && !restoredPromptSnapshot
+      && restoredSessionModelRef?.provider && restoredSessionModelRef?.modelId
+      ? findModel(models.availableModels, restoredSessionModelRef.modelId, restoredSessionModelRef.provider)
+      : null;
+    const promptPatchModel = restoredPromptSnapshot ? null : (effectiveModel || restoredPromptModel);
+    // Preserve legacy `auto` until the target model is known. Collapsing it to
+    // the model-agnostic Medium default here would ignore a model-level default
+    // such as Kimi for Coding's High setting.
+    const requestedThinkingLevel = restore
+      ? (restoredThinkingLevel || this._getDefaultThinkingLevelForModel(promptPatchModel))
+      : (thinkingLevel ?? this._getDefaultThinkingLevelForModel(effectiveModel));
+    let initialThinkingLevel = normalizeThinkingLevelForModel(requestedThinkingLevel, promptPatchModel);
+    let resolvedThinkingLevel = models.resolveThinkingLevel(initialThinkingLevel);
+    const providerPromptPatches = promptPatchModel
+      ? getProviderPromptPatches(promptPatchModel, {
+        reasoningLevel: resolvedThinkingLevel,
+        locale: agent.config?.locale || getLocale(),
+      })
+      : [];
+    let workspaceMount = normalizeSessionWorkspaceMount({ workspaceMountId, workspaceLabel });
+    let workspaceScope = normalizeWorkspaceScope({
+      primaryCwd: effectiveCwd,
+      workspaceFolders,
+    });
+    let folderScope = normalizeSessionFolderScope({
+      primaryCwd: effectiveCwd,
+      workspaceFolders: workspaceScope.workspaceFolders,
+      authorizedFolders,
+    });
+    if (restore && sessionPathForMeta) {
+      try {
+        const metaPath = path.join(agent.sessionDir, "session-meta.json");
+        const meta = await this._readMetaCached(metaPath);
+        const metaEntry = meta[path.basename(sessionPathForMeta)];
+        const restoredFolders = metaEntry?.workspaceFolders;
+        const restoredAuthorizedFolders = metaEntry?.authorizedFolders;
+        workspaceMount = normalizeSessionWorkspaceMount(metaEntry);
+        workspaceScope = normalizeWorkspaceScope({
+          primaryCwd: effectiveCwd,
+          workspaceFolders: restoredFolders,
+        });
+        folderScope = normalizeSessionFolderScope({
+          primaryCwd: effectiveCwd,
+          workspaceFolders: workspaceScope.workspaceFolders,
+          authorizedFolders: restoredAuthorizedFolders,
+        });
+      } catch {
+        // session-meta English only fresh English only workspaceScopeEnglish only
+      }
+    }
+    // English only session English only
+    // fresh create: English only"English only prompt English only"English onlymaster && sessionEnglish only
+    // restore: English only session-meta English only memoryEnabled English only
+    // English only session English only prefix English only master English only
+    const restoredMemoryEnabled = restore && sessionPathForMeta
+      ? this._readSessionMemoryEnabledFromMeta(sessionPathForMeta)
+      : null;
+    const frozenMemoryEnabled = restore
+      ? (typeof restoredMemoryEnabled === "boolean" ? restoredMemoryEnabled : !!memoryEnabled)
+      : (agent.memoryMasterEnabled !== false && !!memoryEnabled);
+    let restoredExperienceEnabled = false;
+    let restoredExperimentFlags = null;
+    if (restore && sessionPathForMeta) {
+      try {
+        const metaPath = path.join(agent.sessionDir, "session-meta.json");
+        const meta = await this._readMetaCached(metaPath);
+        const metaEntry = meta[path.basename(sessionPathForMeta)];
+        restoredExperienceEnabled = metaEntry?.experienceEnabled === true;
+        restoredExperimentFlags = normalizeSessionExperimentFlags(metaEntry?.experiments);
+      } catch (err) {
+        if (err.code !== "ENOENT") {
+          log.warn(`session-meta.json English only experienceEnabled English only: ${err.message}`);
+        }
+      }
+    }
+    const agentHasExperienceSwitch = typeof agent.experienceEnabled === "boolean";
+    const frozenExperienceEnabled = restore
+      ? restoredExperienceEnabled
+      : (agentHasExperienceSwitch ? agent.experienceEnabled === true : false);
+    const freshDeepSeekRoleplayEnabled = !restore
+      && readDeepSeekRoleplayExperimentFlag(this._d.getPrefs?.());
+    const frozenExperimentFlags = restore
+      ? normalizeSessionExperimentFlags(restoredExperimentFlags)
+      : normalizeSessionExperimentFlags({
+        deepseekRoleplayReasoningPatch: freshDeepSeekRoleplayEnabled,
+        deepseekRoleplayReasoningContext: freshDeepSeekRoleplayEnabled
+          ? buildDeepSeekRoleplayReasoningContext(agent)
+          : null,
+      });
+
+    const baseResourceLoader = this._d.getResourceLoader();
+    let restoredPermissionMode = null;
+    if (restore && sessionPathForMeta) {
+      const manifest = this._resolveSessionManifestForPath(sessionPathForMeta);
+      if (manifest?.permissionModeSnapshot?.mode) {
+        restoredPermissionMode = normalizeSessionPermissionMode(manifest.permissionModeSnapshot.mode);
+      }
+    }
+    if (restore && sessionPathForMeta && restoredPermissionMode === null) {
+      try {
+        const metaPath = path.join(agent.sessionDir, "session-meta.json");
+        const meta = await this._readMetaCached(metaPath);
+        const metaEntry = meta[path.basename(sessionPathForMeta)];
+        if (hasSessionPermissionModeFields(metaEntry)) {
+          restoredPermissionMode = normalizeSessionPermissionMode(metaEntry);
+        }
+      } catch (err) {
+        if (err.code !== "ENOENT") {
+          log.warn(`session permission mode restore failed: ${err.message}`);
+        }
+      }
+    }
+    let initialPermissionMode = restore
+      ? normalizeSessionPermissionMode(restoredPermissionMode)
+      : normalizeSessionPermissionMode(this._pendingPermissionMode || this._getDefaultPermissionMode());
+    this._pendingPermissionMode = null;
+    let initialAccessMode = legacyAccessModeFromPermissionMode(initialPermissionMode);
+    let initialPlanMode = isReadOnlyPermissionMode(initialPermissionMode);
+    const sessionEntry = {
+      permissionMode: initialPermissionMode,
+      accessMode: initialAccessMode,
+      planMode: initialPlanMode,
+      thinkingLevel: initialThinkingLevel,
+      experiments: frozenExperimentFlags,
+      visibleInSessionList: visibleInSessionList === true && !restore,
+      sessionId: null as string | null,
+    }; // pre-populated for resourceLoader proxy
+    const pluginSessionMeta = normalizePluginSessionMeta({ ownerPluginId, sessionKind, sessionVisibility });
+
+    // English only system promptEnglish onlyper-session English only
+    // English only prompt English only prefix cacheEnglish only
+    const systemPromptSnapshot = restoredPromptSnapshot?.systemPrompt
+      ?? agent.buildSystemPrompt({
+        forceMemoryEnabled: frozenMemoryEnabled,
+        forceExperienceEnabled: frozenExperienceEnabled,
+        targetModel: promptPatchModel,
+      });
+    const memoryReflectionSnapshot = (!restore && typeof agent.buildMemoryReflectionSnapshot === "function")
+      ? agent.buildMemoryReflectionSnapshot({ forceMemoryEnabled: frozenMemoryEnabled })
+      : null;
+
+    const localeSnapshot = agent.config?.locale || getLocale();
+    const skills = this._d.getSkills?.();
+    const appendSystemPromptSnapshot = restoredPromptSnapshot?.appendSystemPrompt
+      ?? buildAppendSystemPromptSnapshot({
+        baseAppend: baseResourceLoader.getAppendSystemPrompt?.() || [],
+        providerPromptPatches,
+        hasDeferredResultStore: !!this._d.getDeferredResultStore?.(),
+        locale: localeSnapshot,
+        workspaceScope,
+        workspaceContext: agent.config?.workspace_context,
+      });
+    const rawSkillsResultSnapshot = restoredPromptSnapshot?.skillsResult
+      ?? (
+        skills?.getSkillsForAgent
+          ? freezeSkillsResult(skills.getSkillsForAgent(agent, {
+              workspacePaths: workspaceSkillContext?.workspacePaths || null,
+            }))
+          : freezeSkillsResult(baseResourceLoader.getSkills?.())
+      );
+    const skillsResultSnapshot = restoredPromptSnapshot?.skillsResult
+      ? freezeSkillsResult(restoredPromptSnapshot.skillsResult)
+      : freezeSkillsResult(await snapshotSkillsForSession(rawSkillsResultSnapshot, sessionPathForMeta));
+    const agentsFilesResultSnapshot = restoredPromptSnapshot?.agentsFilesResult
+      ?? freezeAgentsFilesResult(baseResourceLoader.getAgentsFiles?.());
+    const promptSnapshotForPersist = restoredPromptSnapshot || {
+      version: SESSION_PROMPT_SNAPSHOT_VERSION,
+      systemPrompt: systemPromptSnapshot,
+      appendSystemPrompt: appendSystemPromptSnapshot,
+      skillsResult: skillsResultSnapshot,
+      agentsFilesResult: agentsFilesResultSnapshot,
+    };
+
+    const sessionPathRef = { current: sessionPathForMeta };
+    const targetModelRef = { current: promptPatchModel || effectiveModel || null };
+    const warnVisionContextInjection = (entry) => {
+      if (typeof entry === "string") {
+        log.warn(entry);
+        return;
+      }
+      log.warn(`vision context injection diagnostic: ${JSON.stringify(entry)}`);
+    };
+
+    // Vision English only
+    // English only Miko English only session/model English only Pi SDK ctxEnglish only restore English only stale ctx English only sidecar English only
+    // English only UI English only current_status(ui_context) English only
+    const getEngine = this._d.getEngine;
+    const visionAuxiliaryExtension = createVisionContextInjectionExtension({
+      path: "miko-desktop-vision-context-injection",
+      sessionPathRef,
+      targetModelRef,
+      getVisionBridge: () => getEngine?.()?.getVisionBridge?.(),
+      isVisionAuxiliaryEnabled: () => getEngine?.()?.isVisionAuxiliaryEnabled?.() === true,
+      resolveSessionFile: ({ fileId, filePath, sessionPath }) => {
+        const engine = getEngine?.();
+        const lookupSessionPath = sessionPath || sessionPathRef.current || null;
+        if (fileId) return engine?.getSessionFile?.(fileId, { sessionPath: lookupSessionPath });
+        if (filePath) return engine?.getSessionFileByPath?.(filePath, { sessionPath: lookupSessionPath });
+        return null;
+      },
+      warn: warnVisionContextInjection,
+    });
+    const turnContextExtension = createReminderAwareTurnContextExtension({
+      path: "miko-desktop-session-turn-context",
+      sessionPathRef,
+      getTurnContext: (sessionPath) => sessionPath
+        ? this._getRuntimeValueForPath(this._turnContextBySession, sessionPath) || null
+        : null,
+    });
+
+    // Wrap resourceLoader: per-session prompt snapshot + plan mode injection + vision auxiliary extension
+    const resourceLoaderProps = {
+      getSystemPrompt: {
+        value: () => systemPromptSnapshot,
+      },
+      getExtensions: {
+        value: () => {
+          const base = baseResourceLoader.getExtensions?.() ?? { extensions: [], errors: [] };
+          return {
+            ...base,
+            extensions: [turnContextExtension, visionAuxiliaryExtension, ...(base.extensions || [])],
+          };
+        },
+      },
+      getAppendSystemPrompt: {
+        value: () => [...appendSystemPromptSnapshot],
+      },
+      getSkills: {
+        value: () => resolveSessionSkillsForRuntime(skillsResultSnapshot),
+      },
+      getAgentsFiles: {
+        value: () => freezeAgentsFilesResult(agentsFilesResultSnapshot),
+      },
+    };
+    const resourceLoader = Object.create(baseResourceLoader, resourceLoaderProps);
+
+    const toolSnapshotOptions: any = { forceMemoryEnabled: frozenMemoryEnabled, model: effectiveModel };
+    if (agentHasExperienceSwitch) {
+      toolSnapshotOptions.forceExperienceEnabled = frozenExperienceEnabled;
+    }
+    const agentToolsSnapshot = typeof agent.getToolsSnapshot === "function"
+      ? agent.getToolsSnapshot(toolSnapshotOptions)
+      : agent.tools;
+    const { tools: sessionTools, customTools: sessionCustomTools } = this._d.buildTools(
+      effectiveCwd,
+      agentToolsSnapshot,
+      {
+        workspace: effectiveCwd,
+        workspaceFolders: workspaceScope.workspaceFolders,
+        authorizedFolders: folderScope.authorizedFolders,
+        getAuthorizedFolders: () => this.getSessionAuthorizedFolders(sessionPathRef.current || sessionPathForMeta),
+        agentDir: agent.agentDir,
+      },
+    );
+    const sessionOpts: any = {
+      cwd: effectiveCwd,
+      sessionManager: sessionMgr,
+      settingsManager: this._createSettings(effectiveModel),
+      authStorage: models.authStorage,
+      modelRegistry: models.modelRegistry,
+      thinkingLevel: resolvedThinkingLevel,
+      resourceLoader,
+      tools: sessionTools,
+      customTools: sessionCustomTools,
+    };
+    // English only session English only modelEnglish only session English only PI SDK English only JSONL English only
+    if (effectiveModel) sessionOpts.model = effectiveModel;
+    const { session, modelFallbackMessage } = await createAgentSession(sessionOpts);
+    if (modelFallbackMessage) {
+      if (restore) {
+        await teardownSessionResources({
+          session,
+          unsub: null,
+          label: "restore-model-fallback-rejected",
+          warn: (message) => log.warn(message),
+        });
+        throw new Error(`Session restore model fallback rejected: ${modelFallbackMessage}`);
+      }
+      log.warn(`session model fallback: ${modelFallbackMessage}`);
+    }
+    const runtimeResolvedModel = session.model;
+    const catalogResolvedModel = runtimeResolvedModel?.id && runtimeResolvedModel?.provider
+      ? findModel(models.availableModels, runtimeResolvedModel.id, runtimeResolvedModel.provider)
+      : null;
+    const runtimeResolvedModelHasIdentity = !!(
+      runtimeResolvedModel?.id && runtimeResolvedModel?.provider
+    );
+    if (restore && runtimeResolvedModelHasIdentity && !catalogResolvedModel) {
+      await teardownSessionResources({
+        session,
+        unsub: null,
+        label: "restore-model-rejected",
+        warn: (message) => log.warn(message),
+      });
+      const ref = runtimeResolvedModel?.provider && runtimeResolvedModel?.id
+        ? `${runtimeResolvedModel.provider}/${runtimeResolvedModel.id}`
+        : "unknown";
+      throw new Error(t("error.modelNotFound", { id: ref }));
+    }
+    const resolvedModel = catalogResolvedModel || runtimeResolvedModel;
+    const actualThinkingLevel = normalizeThinkingLevelForModel(requestedThinkingLevel, resolvedModel);
+    if (actualThinkingLevel !== initialThinkingLevel) {
+      initialThinkingLevel = actualThinkingLevel;
+      resolvedThinkingLevel = models.resolveThinkingLevel(initialThinkingLevel);
+      session.setThinkingLevel?.(resolvedThinkingLevel);
+    }
+    const elapsed = Date.now() - t0;
+    log.log(`session created (${elapsed}ms), model=${resolvedModel?.name || effectiveModel?.name || "?"}`);
+
+    // English only agentIdEnglish only agent English only
+    const sessionPath = session.sessionManager?.getSessionFile?.();
+    sessionPathRef.current = sessionPath || sessionPathRef.current || null;
+    targetModelRef.current = resolvedModel || targetModelRef.current || null;
+    flushSessionManagerSnapshot(session.sessionManager);
+    this._session = session;
+    this._currentSessionPath = sessionPath || null;
+    this._sessionStarted = false;
+    if (restore && sessionPath && !restoredCapabilitySnapshot) {
+      restoredCapabilitySnapshot = this._readSessionCapabilitySnapshot(sessionPath);
+    }
+    if (restore && sessionPath && restoredPermissionMode === null) {
+      const manifest = this._resolveSessionManifestForPath(sessionPath);
+      if (manifest?.permissionModeSnapshot?.mode) {
+        restoredPermissionMode = normalizeSessionPermissionMode(manifest.permissionModeSnapshot.mode);
+        initialPermissionMode = restoredPermissionMode;
+        initialAccessMode = legacyAccessModeFromPermissionMode(initialPermissionMode);
+        initialPlanMode = isReadOnlyPermissionMode(initialPermissionMode);
+        sessionEntry.permissionMode = initialPermissionMode;
+        sessionEntry.accessMode = initialAccessMode;
+        sessionEntry.planMode = initialPlanMode;
+      }
+    }
+    if (restore && sessionPath && restoredPermissionMode === null) {
+      try {
+        const metaPath = path.join(agent.sessionDir, "session-meta.json");
+        const meta = await this._readMetaCached(metaPath);
+        const metaEntry = meta[path.basename(sessionPath)];
+        if (hasSessionPermissionModeFields(metaEntry)) {
+          initialPermissionMode = normalizeSessionPermissionMode(metaEntry);
+          initialAccessMode = legacyAccessModeFromPermissionMode(initialPermissionMode);
+          initialPlanMode = isReadOnlyPermissionMode(initialPermissionMode);
+          sessionEntry.permissionMode = initialPermissionMode;
+          sessionEntry.accessMode = initialAccessMode;
+          sessionEntry.planMode = initialPlanMode;
+        }
+      } catch (err) {
+        if (err.code !== "ENOENT") {
+          log.warn(`session permission mode restore failed: ${err.message}`);
+        }
+      }
+    }
+    const creatingAgentId = ownerAgentId;
+    const unsub = session.subscribe((event) => {
+      if (
+        event?.type === "message_end"
+        && event.message?.role !== "assistant"
+      ) {
+        schedulePreAssistantSessionManagerFlush(session.sessionManager);
+      }
+      recordAssistantUsage({
+        ledger: this._d.getUsageLedger?.(),
+        event,
+        sessionPath,
+        sessionId: this._sessionIdForPath(sessionPath),
+        agentId: creatingAgentId,
+        model: resolvedModel,
+        resolveModel: (ref) => findModel(this._d.getModels?.()?.availableModels, ref.id, ref.provider),
+        source: {
+          subsystem: "session",
+          operation: "reply",
+          surface: "desktop",
+          trigger: "user",
+        },
+      });
+      logDeepSeekReasoningVisibility({
+        event,
+        model: resolvedModel,
+        sessionPath,
+        agentId: creatingAgentId,
+      });
+      this._d.emitEvent(
+        (event as any).agentId ? event : { ...event, agentId: creatingAgentId },
+        sessionPath,
+      );
+    });
+
+    // ── Tool snapshot for session-tool-isolation (parallels session-model-isolation) ──
+    // Three branches:
+    //   A. restore=true + meta has toolNames  → replay the snapshot (applied below)
+    //   B. restore=true + meta missing        → legacy session, keep all tools
+    //   C. restore=false                       → fresh compute from agent config
+    //
+    // allToolNames must cover the COMPLETE active set: Miko built-ins
+    // (read/write/edit/exec_command/write_stdin/grep/find/ls) from
+    // sessionTools + Miko
+    // customs + plugin tools from sessionCustomTools. Using only agent.tools
+    // would silently drop SDK built-ins and plugin tools when
+    // setActiveToolsByName is applied.
+    const allToolObjects = [
+      ...(sessionTools || []),
+      ...(sessionCustomTools || []),
+    ];
+    const allToolNames = toolNamesFromObjects(allToolObjects);
+    const stableRestoreToolNames = toolNamesFromObjects(allToolObjects, {
+      includePluginTools: false,
+    });
+    const channelsEnabled = this._d.getPrefs?.()?.getChannelsEnabled?.();
+    const stableFeatureDisabledToolNames = getStableFeatureDisabledToolNames({
+      channelsEnabled,
+    });
+    const runtimeDisabledToolNames = computeRuntimeDisabledToolNames(
+      allToolObjects,
+      agent.config,
+      { agentId: creatingAgentId, restore, channelsEnabled },
+      { warn: (msg) => log.warn(msg) },
+    );
+    const extraDisabledToolNames = [
+      ...stableFeatureDisabledToolNames,
+      ...runtimeDisabledToolNames,
+    ];
+    let snapshotToolNames = null;  // null signals "do not call setActiveToolsByName"
+    let runtimeToolNames = null;
+    let unavailableToolNames: string[] = [];
+    let shouldPersistRestoredToolNames = false;
+    // #1624English onlydismissed fingerprint English only session-meta English only
+    let restoredDriftDismissedFingerprint: string | null = null;
+    const restoredCapabilityToolNames = Array.isArray(restoredCapabilitySnapshot?.toolNames)
+      ? uniqueToolNames(restoredCapabilitySnapshot.toolNames)
+      : null;
+
+    if (restore) {
+      if (sessionPath) {
+        const metaPathForRestore = path.join(agent.sessionDir, "session-meta.json");
+        let metaEntry = null;
+        try {
+          const meta = await this._readMetaCached(metaPathForRestore);
+          metaEntry = meta[path.basename(sessionPath)];
+        } catch (err) {
+          if (err.code !== "ENOENT") {
+            log.warn(`session-meta read for tool-snapshot restore failed, recomputing from current agent config: ${err.message}`);
+          }
+        }
+        restoredDriftDismissedFingerprint =
+          typeof restoredCapabilitySnapshot?.capabilityDriftDismissedFingerprint === "string"
+            ? restoredCapabilitySnapshot.capabilityDriftDismissedFingerprint
+            : typeof metaEntry?.capabilityDriftDismissedFingerprint === "string"
+            ? metaEntry.capabilityDriftDismissedFingerprint
+            : null;
+        if (refreshCapabilitySnapshots) {
+          // #1624 English onlyCase C English only
+          // English only dismissed English only fingerprint English only
+          const disabled = agent.config?.tools?.disabled ?? DEFAULT_DISABLED_TOOL_NAMES;
+          snapshotToolNames = computeToolSnapshot(allToolNames, disabled, {
+            extraDisabled: extraDisabledToolNames,
+          });
+          runtimeToolNames = snapshotToolNames;
+          shouldPersistRestoredToolNames = true;
+          restoredDriftDismissedFingerprint = null;
+        } else if (restoredCapabilityToolNames) {
+          const runtimeAvailableToolNames = computeToolSnapshot(allToolNames, [], {
+            extraDisabled: extraDisabledToolNames,
+          });
+          const repair = repairRestoredToolSnapshotDetailed(
+            restoredCapabilityToolNames,
+            runtimeAvailableToolNames,
+          );
+          snapshotToolNames = repair.contractToolNames;
+          runtimeToolNames = repair.toolNames;
+          unavailableToolNames = repair.droppedToolNames;
+          shouldPersistRestoredToolNames = !sameToolNames(snapshotToolNames, restoredCapabilityToolNames);
+        } else if (metaEntry && Array.isArray(metaEntry.toolNames)) {
+          const restoredToolNames = uniqueToolNames(metaEntry.toolNames);
+          const runtimeAvailableToolNames = computeToolSnapshot(allToolNames, [], {
+            extraDisabled: extraDisabledToolNames,
+          });
+          const repair = repairRestoredToolSnapshotDetailed(
+            restoredToolNames,
+            runtimeAvailableToolNames,
+          );
+          snapshotToolNames = repair.contractToolNames;
+          runtimeToolNames = repair.toolNames;
+          unavailableToolNames = repair.droppedToolNames;
+          shouldPersistRestoredToolNames = !sameToolNames(snapshotToolNames, metaEntry.toolNames);
+        } else {
+          // Legacy sessions created before tool snapshots had no stable tool
+          // identity boundary. Establish one on first restore so future plugin
+          // or dynamic tool registrations only affect newly created sessions.
+          const disabled = agent.config?.tools?.disabled ?? DEFAULT_DISABLED_TOOL_NAMES;
+          snapshotToolNames = computeToolSnapshot(stableRestoreToolNames, disabled, {
+            extraDisabled: extraDisabledToolNames,
+          });
+          runtimeToolNames = snapshotToolNames;
+          shouldPersistRestoredToolNames = true;
+        }
+      }
+    } else {
+      // Case C. Fresh agents (and agents upgrading from a pre-feature version)
+      // have no tools.disabled field — apply DEFAULT_DISABLED_TOOL_NAMES so
+      // dm is off by default. Explicit `[]` means "all on"
+      // and is preserved via nullish-coalescing rather than `||`.
+      const disabled = agent.config?.tools?.disabled ?? DEFAULT_DISABLED_TOOL_NAMES;
+      snapshotToolNames = computeToolSnapshot(allToolNames, disabled, {
+        extraDisabled: extraDisabledToolNames,
+      });
+      runtimeToolNames = snapshotToolNames;
+    }
+
+    // A missing runtime handler is availability state, not permission to
+    // rewrite the frozen contract. Surface the outage while keeping restore
+    // otherwise free of live prompt-diff work.
+    const unavailableDrift = unavailableToolNames.length > 0
+      ? buildSessionCapabilityDrift({
+          frozenToolNames: runtimeToolNames || [],
+          liveToolNames: runtimeToolNames || [],
+          invalidToolNames: unavailableToolNames,
+          frozenSystemPrompt: "",
+          liveSystemPrompt: "",
+        })
+      : null;
+    let capabilityDrift = unavailableDrift?.hasDrift ? unavailableDrift : null;
+
+    const reminderBaselineSeq = this._envChangeLedger?.maxSeq?.() ?? 0;
+    const hasPreviousReminderState = reminderState && typeof reminderState === "object";
+    const preserveFrozenPromptReminderState = !!restoredPromptSnapshot && hasPreviousReminderState;
+    const initialReminderState = {
+      reminderEnvCursor: preserveFrozenPromptReminderState
+        ? (reminderState.reminderEnvCursor ?? reminderBaselineSeq)
+        : reminderBaselineSeq,
+      reminderEnvStartSeq: preserveFrozenPromptReminderState
+        ? (reminderState.reminderEnvStartSeq ?? reminderBaselineSeq)
+        : reminderBaselineSeq,
+      // A reused frozen prompt contains an old session-start clock. Every
+      // restored runtime therefore observes time again on its first message.
+      lastTimeObservedAt: restoredPromptSnapshot ? null : Date.now(),
+      reminderCompactionRevision: hasPreviousReminderState
+        ? (reminderState.reminderCompactionRevision ?? 0)
+        : 0,
+      reminderConsumedCompactionRevision: hasPreviousReminderState
+        ? (reminderState.reminderConsumedCompactionRevision ?? 0)
+        : 0,
+      reminderAcceptedUnavailableToolNames: hasPreviousReminderState
+        ? uniqueToolNames(reminderState.reminderAcceptedUnavailableToolNames || [])
+          .sort((left, right) => left.localeCompare(right))
+        : [],
+      reminderUnavailableRevision: hasPreviousReminderState
+        ? (reminderState.reminderUnavailableRevision ?? 0)
+        : 0,
+    };
+
+    Object.assign(sessionEntry, {
+      session,
+      agentId: creatingAgentId,
+      memoryEnabled: frozenMemoryEnabled,
+      experienceEnabled: frozenExperienceEnabled,
+      modelId: resolvedModel?.id || effectiveModel?.id || null,
+      modelProvider: resolvedModel?.provider || effectiveModel?.provider || null,
+      cwd: effectiveCwd,
+      workspaceFolders: workspaceScope.workspaceFolders,
+      workspaceMountId: workspaceMount?.mountId || null,
+      workspaceLabel: workspaceMount?.label || null,
+      authorizedFolders: folderScope.authorizedFolders,
+      permissionMode: initialPermissionMode,
+      accessMode: initialAccessMode,
+      planMode: initialPlanMode,
+      thinkingLevel: initialThinkingLevel,
+      experiments: frozenExperimentFlags,
+      toolNames: snapshotToolNames,  // null for legacy sessions (Case B), array otherwise
+      runtimeToolNames,
+      unavailableToolNames,
+      activeToolDefinitions: activeToolDefinitionsFromSnapshot(allToolObjects, runtimeToolNames),
+      ownerPluginId: pluginSessionMeta?.ownerPluginId || null,
+      sessionKind: pluginSessionMeta?.kind || null,
+      sessionVisibility: pluginSessionMeta?.visibility || "public",
+      memoryReflectionSnapshot,
+      // #1624English onlysession English only sessionEntryEnglish onlythis._sessions English only _sessionRuntimeKeyForPath English only sessionId English onlysessionPath English only agent/engine
+      capabilityDrift,
+      capabilityDriftDismissedFingerprint: restoredDriftDismissedFingerprint,
+      ...initialReminderState,
+      lastTouchedAt: Date.now(),
+      unsub,
+      sessionPath,
+    });
+    const manifestDefaults = {
+      ownerAgentId: creatingAgentId,
+      domain: "desktop",
+      kind: pluginSessionMeta?.kind || "chat",
+      lifecycle: "active",
+      memoryPolicy: {
+        mode: frozenMemoryEnabled ? "enabled" : "disabled",
+        inheritedFrom: restore ? "session_restore" : "session_create",
+      },
+      permissionModeSnapshot: {
+        mode: initialPermissionMode,
+        source: restore ? "session_restore" : "session_create",
+        capturedAt: new Date().toISOString(),
+      },
+      thinkingLevel: initialThinkingLevel,
+      workspaceScope: {
+        primaryCwd: effectiveCwd,
+        workspaceFolders: workspaceScope.workspaceFolders,
+        authorizedFolders: folderScope.authorizedFolders,
+        ...(workspaceMount?.mountId ? { workspaceMount } : {}),
+      },
+      plugin: pluginSessionMeta,
+      provenance: {
+        createdBy: restore ? "session_restore" : "session_create",
+      },
+      migration: {},
+      locatorReason: restore ? "session_restore" : "session_create",
+    };
+    const manifest = this._ensureSessionManifestForPath(sessionPath, manifestDefaults);
+    if (manifest) {
+      sessionEntry.sessionId = manifest.sessionId;
+    }
+    // English only mapEnglish onlySessionEntryEnglish only— sessionEntry is the same object the resourceLoader proxy references.
+    // Runtime ownership is keyed by sessionId when the manifest layer is available;
+    // sessionPath remains only a locator resolved at method boundaries.
+    const mapKey = manifest?.sessionId || sessionPath || `_anon_${Date.now()}`;
+    const old = this._sessions.get(mapKey);
+    if (old) old.unsub();
+    this._sessions.set(mapKey, sessionEntry);
+    if (sessionPath && mapKey !== sessionPath) this._sessions.delete(sessionPath);
+    this._deleteRuntimeValueForPath(this._hibernatedSessionMeta, sessionPath);
+
+    // Apply tool snapshot (Case A / Case C). Permission mode is a runtime
+    // policy and does not change the stable tool schema.
+    if (runtimeToolNames !== null) {
+      session.setActiveToolsByName(runtimeToolNames);
+    }
+
+    if (restoredPromptSnapshot?.finalSystemPrompt) {
+      this._applyFinalPromptSnapshot(session, restoredPromptSnapshot.finalSystemPrompt);
+    }
+    const finalSystemPrompt = this._getFinalSystemPrompt(session);
+    const promptSnapshotToWrite = finalSystemPrompt
+      ? { ...promptSnapshotForPersist, finalSystemPrompt }
+      : promptSnapshotForPersist;
+    this._renewCachePrefixContract(mapKey, sessionEntry, restore ? "session_restore" : "new_session");
+    this._installCachePrefixGuard(mapKey, sessionEntry);
+
+    // Persist fresh snapshots and repair/establish restored snapshots. Restored
+    // legacy sessions with missing toolNames get a baseline on first restore,
+    // so later plugin/dynamic tool registrations do not drift into old history.
+    // writeSessionMeta is serialized and never rejects; awaiting gives
+    // createSession a clean post-return state.
+    if (!restore && sessionPath) {
+      const metaPatch: any = {
+        memoryEnabled: frozenMemoryEnabled,
+        experienceEnabled: frozenExperienceEnabled,
+        workspaceFolders: workspaceScope.workspaceFolders,
+        authorizedFolders: folderScope.authorizedFolders,
+        permissionMode: initialPermissionMode,
+        accessMode: initialAccessMode,
+        planMode: initialPlanMode,
+        thinkingLevel: initialThinkingLevel,
+        promptSnapshot: promptSnapshotToWrite,
+      };
+      if (workspaceMount?.mountId) {
+        metaPatch.workspaceMountId = workspaceMount.mountId;
+        metaPatch.workspaceLabel = workspaceMount.label || null;
+      }
+      const experimentsForMeta = sessionExperimentFlagsForMeta(frozenExperimentFlags);
+      if (experimentsForMeta) {
+        metaPatch.experiments = experimentsForMeta;
+      }
+      if (memoryReflectionSnapshot) {
+        metaPatch.memoryReflectionSnapshot = memoryReflectionSnapshot;
+      }
+      if (pluginSessionMeta) {
+        metaPatch.plugin = pluginSessionMeta;
+      }
+      if (snapshotToolNames !== null) metaPatch.toolNames = snapshotToolNames;
+      await this.writeSessionMeta(sessionPath, metaPatch);
+    } else if (restore && sessionPath) {
+      const metaPatch: any = {};
+      if (!restoredPromptSnapshot) metaPatch.promptSnapshot = promptSnapshotToWrite;
+      if (restoredThinkingLevel !== initialThinkingLevel) {
+        metaPatch.thinkingLevel = initialThinkingLevel;
+      }
+      if (shouldPersistRestoredToolNames && snapshotToolNames !== null) {
+        metaPatch.toolNames = snapshotToolNames;
+      }
+      if (refreshCapabilitySnapshots) {
+        // #1624 English onlydismissed English only
+        metaPatch.capabilityDriftDismissedFingerprint = null;
+      }
+      if (Object.keys(metaPatch).length > 0) {
+        await this.writeSessionMeta(sessionPath, metaPatch);
+      }
+    }
+
+    // LRU English only lastTouchedAt English only streaming English only session
+    if (this._sessions.size > MAX_CACHED_SESSIONS) {
+      const focusPath = this.currentSessionPath;
+      const candidates = [...this._sessions.entries()]
+        .filter(([key, e]) => key !== mapKey && key !== focusPath && !e.session.isStreaming)
+        .sort((a, b) => a[1].lastTouchedAt - b[1].lastTouchedAt);
+      for (const [key, entry] of candidates) {
+        // English onlyfire-and-forgetEnglish only
+        const agent = this._d.getAgentById(entry.agentId) || this._d.getAgent();
+        agent?._memoryTicker?.notifySessionEnd(key).catch((err) =>
+          log.warn(`LRU English only ${path.basename(key)}: notifySessionEnd failed: ${err.message}`),
+        );
+        await this._teardownSessionEntry(entry, key, "lru");
+        this._sessions.delete(key);
+        if (this._sessions.size <= MAX_CACHED_SESSIONS) break;
+      }
+    }
+
+    if (!restore) {
+      this._refreshAgentAppearanceSummaryAfterCreate(agent, resolvedModel || effectiveModel || null);
+    }
+
+    return { session, sessionPath: sessionPath || mapKey, sessionId: manifest?.sessionId || null, agentId: creatingAgentId };
+  }
+
+  _refreshAgentAppearanceSummaryAfterCreate(agent: any, targetModel: any) {
+    if (!agent || typeof agent.refreshAppearanceSummary !== "function") return;
+    setTimeout(() => {
+      void Promise.resolve()
+        .then(() => agent.refreshAppearanceSummary({ targetModel, rebuildSystemPrompt: true }))
+        .catch((err) => {
+          log.warn(`agent appearance summary refresh failed: ${err?.message || err}`);
+        });
+    }, 0);
+  }
+
+  async createDetachedSession({
+    sessionMgr = null,
+    cwd = undefined,
+    memoryEnabled = true,
+    model = null,
+    agent = null,
+    agentId = null,
+    preserveAgentMemoryState = false,
+    workspaceFolders = [],
+    authorizedFolders = [],
+    visibleInSessionList = true,
+    permissionMode = null,
+    thinkingLevel = null,
+    workspaceMountId = null,
+    workspaceLabel = null,
+    ownerPluginId = null,
+    sessionKind = null,
+    sessionVisibility = null,
+  }: any = {}) {
+    const prevFocus = this._session;
+    const prevCurrentSessionPath = this._currentSessionPath;
+    const prevSessionStarted = this._sessionStarted;
+    const prevPendingPermissionMode = this._pendingPermissionMode;
+
+    if (permissionMode !== null && permissionMode !== undefined) {
+      this._pendingPermissionMode = normalizeSessionPermissionMode(permissionMode);
+    }
+
+    try {
+      return await this.createSession(sessionMgr, cwd, memoryEnabled, model, {
+        agent,
+        agentId,
+        preserveAgentMemoryState,
+        workspaceFolders,
+        authorizedFolders,
+        visibleInSessionList,
+        thinkingLevel,
+        workspaceMountId,
+        workspaceLabel,
+        ownerPluginId,
+        sessionKind,
+        sessionVisibility,
+      });
+    } finally {
+      this._session = prevFocus;
+      this._currentSessionPath = prevCurrentSessionPath;
+      this._sessionStarted = prevSessionStarted;
+      this._pendingPermissionMode = prevPendingPermissionMode;
+    }
+  }
+
+  async continueDeletedAgentSession(sourceSessionPath: any) {
+    this._assertActiveDesktopSessionPath(sourceSessionPath, "continueDeletedAgentSession");
+    const ownership = this.resolveSessionOwnership(sourceSessionPath);
+    const sourceAgentId = ownership.agentId;
+    if (!sourceAgentId) {
+      throw new Error(`continueDeletedAgentSession: cannot resolve source agentId for ${sourceSessionPath}`);
+    }
+    if (!ownership.agentDeleted) {
+      throw new Error(`continueDeletedAgentSession: source agent "${sourceAgentId}" is not deleted`);
+    }
+    try {
+      await fsp.access(sourceSessionPath);
+    } catch {
+      throw new Error(`continueDeletedAgentSession: source session not found`);
+    }
+
+    const primaryAgentId = this._d.getPrefs?.()?.getPrimaryAgent?.() || this._d.getActiveAgentId?.();
+    const targetAgent = primaryAgentId ? this._d.getAgentById?.(primaryAgentId) : this._d.getAgent();
+    if (!targetAgent) {
+      throw new Error(`continueDeletedAgentSession: primary agent "${primaryAgentId || "(missing)"}" not found`);
+    }
+    if (this._d.isAgentDeleted?.(targetAgent.id)) {
+      throw new Error(`continueDeletedAgentSession: primary agent "${targetAgent.id}" has been deleted`);
+    }
+
+    const sourceManager = SessionManager.open(sourceSessionPath, path.dirname(sourceSessionPath));
+    const sourceCwd = sourceManager.getCwd?.() || null;
+    const targetCwd = sourceCwd || this._d.getHomeCwd(targetAgent.id) || process.cwd();
+    const sourceMessages = readSessionBranchMessages(sourceSessionPath);
+    const transcriptMessages = sourceMessages
+      .map(normalizeDeletedAgentTranscriptMessage)
+      .filter(Boolean);
+    if (transcriptMessages.length === 0) {
+      throw deletedAgentContinuationError(
+        "SESSION_TRANSCRIPT_EMPTY",
+        "source session has no displayable transcript",
+        422,
+      );
+    }
+
+    let createdSessionPath = null;
+    try {
+      const result = await this.createSession(null, targetCwd, true, null, {
+        agent: targetAgent,
+        agentId: targetAgent.id,
+        visibleInSessionList: true,
+      });
+      const session = result.session;
+      createdSessionPath = result.sessionPath;
+      const manager = session.sessionManager;
+      for (const message of transcriptMessages) {
+        manager.appendMessage(message as any);
+      }
+      if (session.model?.provider && session.model?.id) {
+        manager.appendModelChange(session.model.provider, session.model.id);
+      }
+      (manager as any)._rewriteFile?.();
+
+      await this.writeSessionMeta(createdSessionPath, {
+        continuedFrom: {
+          sourceSessionPath,
+          sourceAgentId,
+          sourceAgentDeleted: true,
+          migratedAt: new Date().toISOString(),
+        },
+      });
+      let compacted = false;
+      let compactionError = null;
+      try {
+        await this._freshCompactDeletedAgentContinuation(session, transcriptMessages, {
+          sourceSessionPath,
+          sourceAgentId,
+        });
+        compacted = true;
+      } catch (error) {
+        compactionError = error?.message || String(error);
+      }
+      await this.setSessionPinned(sourceSessionPath, false);
+      (manager as any)._rewriteFile?.();
+      return {
+        session,
+        sessionPath: createdSessionPath,
+        sessionId: this._sessionIdForPath(createdSessionPath),
+        agentId: targetAgent.id,
+        agentName: targetAgent.agentName || targetAgent.name || targetAgent.id,
+        cwd: manager.getCwd?.() || targetCwd,
+        workspaceFolders: this.getSessionWorkspaceFolders(createdSessionPath),
+        compacted,
+        compactionError,
+      };
+    } catch (err) {
+      if (createdSessionPath) {
+        try { await this.discardSessionRuntime(createdSessionPath, "deleted agent continuation failed"); } catch {}
+        try { await fsp.rm(createdSessionPath, { force: true }); } catch {}
+      }
+      throw err;
+    }
+  }
+
+  async _freshCompactDeletedAgentContinuation(session: any, transcriptMessages: any[], { sourceSessionPath, sourceAgentId }: any) {
+    if (!session?.sessionManager) throw new Error("deleted-agent continuation compaction requires a session manager");
+    const model = session.model;
+    if (!model) throw new Error("deleted-agent continuation compaction requires a model");
+    const settings = session.settingsManager?.getCompactionSettings?.() || this._createSettings(model)?.getCompactionSettings?.();
+    const tokensBefore = transcriptMessages.reduce((sum, message) => sum + estimateTokens(message), 0);
+    const preparation = {
+      messagesToSummarize: transcriptMessages,
+      turnPrefixMessages: [],
+      previousSummary: null,
+      isSplitTurn: false,
+      firstKeptEntryId: null,
+      tokensBefore,
+      settings,
+      fileOps: { read: new Set(), written: new Set(), edited: new Set() },
+    };
+    session?._emit?.({ type: "compaction_start", reason: "deleted_agent_continue" });
+    const targetSessionPath = session.sessionManager?.getSessionFile?.() || null;
+    const targetSessionId = targetSessionPath ? this._sessionIdForPath(targetSessionPath) : null;
+    try {
+      const result = await createCachePreservingCompactionResult({
+        preparation,
+        model,
+        systemPrompt: session.agent?.state?.systemPrompt ?? session.systemPrompt,
+        customInstructions: [
+          "This is a fresh continuation summary created from a read-only session whose Agent was deleted.",
+          `Source agent id: ${sourceAgentId}.`,
+          `Source session path: ${sourceSessionPath}.`,
+          "Summarize the old transcript so the new primary Agent can continue without depending on the deleted Agent runtime.",
+        ].join(" "),
+        thinkingLevel: session.thinkingLevel ?? session.agent?.state?.thinkingLevel,
+        streamFn: session.agent?.streamFn,
+        streamOptions: {
+          sessionId: session.agent?.sessionId,
+          onPayload: session.agent?.onPayload,
+          onResponse: session.agent?.onResponse,
+          transport: session.agent?.transport,
+          thinkingBudgets: session.agent?.thinkingBudgets,
+          maxRetryDelayMs: session.agent?.maxRetryDelayMs,
+        },
+        convertToLlm: session.agent?.convertToLlm,
+        usageLedger: this._d.getUsageLedger?.(),
+        usageContext: {
+          source: {
+            subsystem: "compaction",
+            operation: "deleted_agent_continue",
+            surface: "desktop",
+            trigger: "user",
+          },
+          attribution: {
+            kind: "session",
+            agentId: session.agentId || session.agent?.id || null,
+            ...(targetSessionId ? { sessionId: targetSessionId } : {}),
+            sessionPath: targetSessionPath,
+          },
+        },
+      } as any);
+      const saved = await appendCompactionResultToSession(session, result, {
+        fromExtension: false,
+        onCompacted: () => {
+          if (targetSessionPath) this._markSessionCompacted(targetSessionPath);
+        },
+      });
+      session?._emit?.({
+        type: "compaction_end",
+        reason: "deleted_agent_continue",
+        result: saved,
+        aborted: false,
+        willRetry: false,
+      });
+      return saved;
+    } catch (error) {
+      session?._emit?.({
+        type: "compaction_end",
+        reason: "deleted_agent_continue",
+        aborted: false,
+        willRetry: false,
+        errorMessage: `Compaction failed: ${error.message || error}`,
+      });
+      throw error;
+    }
+  }
+
+  getSessionWorkspaceFolders(sessionPath = this.currentSessionPath) {
+    if (!sessionPath) return [];
+    const entry = this._sessionFolderEntry(sessionPath);
+    const manifest = this._resolveSessionManifestForPath(sessionPath);
+    let folders = null;
+    if (Array.isArray(entry?.workspaceFolders)) {
+      folders = entry.workspaceFolders;
+    } else if (Array.isArray(manifest?.workspaceScope?.workspaceFolders)) {
+      folders = manifest.workspaceScope.workspaceFolders;
+    } else {
+      folders = this._readSessionMetaEntrySync(sessionPath)?.workspaceFolders;
+    }
+    return Array.isArray(folders) ? [...folders] : [];
+  }
+
+  getSessionWorkspaceMount(sessionPath = this.currentSessionPath) {
+    if (!sessionPath) return null;
+    const entry = this._sessionFolderEntry(sessionPath);
+    const manifest = this._resolveSessionManifestForPath(sessionPath);
+    const metaEntry = entry ? null : this._readSessionMetaEntrySync(sessionPath);
+    return normalizeSessionWorkspaceMount({
+      workspaceMountId: entry?.workspaceMountId
+        ?? manifest?.workspaceScope?.workspaceMount?.mountId
+        ?? metaEntry?.workspaceMountId,
+      workspaceLabel: entry?.workspaceLabel
+        ?? manifest?.workspaceScope?.workspaceMount?.label
+        ?? metaEntry?.workspaceLabel,
+    });
+  }
+
+  getSessionAuthorizedFolders(sessionPath = this.currentSessionPath) {
+    if (!sessionPath) return [];
+    const entry = this._sessionFolderEntry(sessionPath);
+    const manifest = this._resolveSessionManifestForPath(sessionPath);
+    let folders = null;
+    if (Array.isArray(entry?.authorizedFolders)) {
+      folders = entry.authorizedFolders;
+    } else if (Array.isArray(manifest?.workspaceScope?.authorizedFolders)) {
+      folders = manifest.workspaceScope.authorizedFolders;
+    } else {
+      folders = this._readSessionMetaEntrySync(sessionPath)?.authorizedFolders;
+    }
+    return Array.isArray(folders) ? [...folders] : [];
+  }
+
+  isDeepSeekRoleplayReasoningPatchEnabled(sessionPath = this.currentSessionPath) {
+    if (!sessionPath) return false;
+    const entry = this._getSessionEntryByPath(sessionPath);
+    const flags = entry?.experiments
+      || this._readSessionMetaEntrySync(sessionPath)?.experiments;
+    return normalizeSessionExperimentFlags(flags).deepseekRoleplayReasoningPatch === true;
+  }
+
+  getDeepSeekRoleplayReasoningContext(sessionPath = this.currentSessionPath) {
+    if (!sessionPath) return null;
+    const entry = this._getSessionEntryByPath(sessionPath);
+    const flags = entry?.experiments
+      || this._readSessionMetaEntrySync(sessionPath)?.experiments;
+    const normalized = normalizeSessionExperimentFlags(flags);
+    return normalized.deepseekRoleplayReasoningPatch === true
+      ? normalized.deepseekRoleplayReasoningContext || null
+      : null;
+  }
+
+  getSessionFolderScope(sessionPath = this.currentSessionPath) {
+    const entry = sessionPath ? this._sessionFolderEntry(sessionPath) : null;
+    const manifest = sessionPath ? this._resolveSessionManifestForPath(sessionPath) : null;
+    const metaEntry = sessionPath && !entry ? this._readSessionMetaEntrySync(sessionPath) : null;
+    const cwd = this._sessionCwdFor(sessionPath, entry) || manifest?.workspaceScope?.primaryCwd || null;
+    const scope = normalizeSessionFolderScope({
+      primaryCwd: cwd,
+      workspaceFolders: Array.isArray(entry?.workspaceFolders)
+        ? entry.workspaceFolders
+        : (Array.isArray(manifest?.workspaceScope?.workspaceFolders)
+          ? manifest.workspaceScope.workspaceFolders
+          : metaEntry?.workspaceFolders),
+      authorizedFolders: Array.isArray(entry?.authorizedFolders)
+        ? entry.authorizedFolders
+        : (Array.isArray(manifest?.workspaceScope?.authorizedFolders)
+          ? manifest.workspaceScope.authorizedFolders
+          : metaEntry?.authorizedFolders),
+    });
+    return {
+      sessionPath: sessionPath || null,
+      cwd: scope.primaryCwd,
+      workspaceFolders: scope.workspaceFolders,
+      authorizedFolders: scope.authorizedFolders,
+      sandboxFolders: scope.sandboxFolders,
+    };
+  }
+
+  async setSessionAuthorizedFolders(sessionPath: any, folders: any) {
+    this._assertActiveDesktopSessionPath(sessionPath, "setSessionAuthorizedFolders");
+    if (this._isDeletedAgentSessionPath(sessionPath)) {
+      throw new Error("setSessionAuthorizedFolders: session belongs to a deleted agent");
+    }
+    const current = this.getSessionFolderScope(sessionPath);
+    const scope = normalizeSessionFolderScope({
+      primaryCwd: current.cwd,
+      workspaceFolders: current.workspaceFolders,
+      authorizedFolders: folders,
+    });
+    this._updateSessionFolderRuntimeMeta(sessionPath, {
+      cwd: current.cwd,
+      workspaceFolders: scope.workspaceFolders,
+      authorizedFolders: scope.authorizedFolders,
+    });
+    await this.writeSessionMeta(sessionPath, {
+      workspaceFolders: scope.workspaceFolders,
+      authorizedFolders: scope.authorizedFolders,
+    });
+    const manifest = this._resolveSessionManifestForPath(sessionPath);
+    if (manifest) {
+      this._sessionManifestStore.setWorkspaceScope(manifest.sessionId, {
+        ...(manifest.workspaceScope || {}),
+        primaryCwd: current.cwd,
+        workspaceFolders: scope.workspaceFolders,
+        authorizedFolders: scope.authorizedFolders,
+      });
+    }
+    this._d.emitEvent?.({
+      type: "app_event",
+      event: {
+        type: "session-authorized-folders-updated",
+        payload: {
+          sessionPath,
+          authorizedFolders: scope.authorizedFolders,
+          workspaceFolders: scope.workspaceFolders,
+          sandboxFolders: scope.sandboxFolders,
+        },
+        source: "server",
+      },
+    }, sessionPath);
+    return this.getSessionFolderScope(sessionPath);
+  }
+
+  async addSessionAuthorizedFolder(sessionPath: any, folder: any) {
+    const current = this.getSessionAuthorizedFolders(sessionPath);
+    return this.setSessionAuthorizedFolders(sessionPath, [...current, folder]);
+  }
+
+  async removeSessionAuthorizedFolder(sessionPath: any, folder: any) {
+    const target = normalizeSessionFolderScope({ authorizedFolders: [folder] }).authorizedFolders[0];
+    const current = this.getSessionAuthorizedFolders(sessionPath);
+    const next = target
+      ? current.filter((item) => item !== target)
+      : current;
+    return this.setSessionAuthorizedFolders(sessionPath, next);
+  }
+
+  _sessionFolderEntry(sessionPath: any) {
+    if (!sessionPath) return null;
+    return this._getSessionEntryByPath(sessionPath)
+      || this._getRuntimeValueForPath(this._hibernatedSessionMeta, sessionPath)
+      || null;
+  }
+
+  _sessionCwdFor(sessionPath: any, entry: any = null) {
+    if (entry?.cwd) return entry.cwd;
+    const liveCwd = entry?.session?.sessionManager?.getCwd?.();
+    if (liveCwd) return liveCwd;
+    if (sessionPath && this._session?.sessionManager?.getSessionFile?.() === sessionPath) {
+      return this._session.sessionManager?.getCwd?.() || null;
+    }
+    if (!sessionPath) return null;
+    try {
+      return SessionManager.open(sessionPath, path.dirname(sessionPath)).getCwd?.() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  _readSessionMetaEntrySync(sessionPath: any) {
+    if (!sessionPath) return null;
+    try {
+      const metaPath = this._sessionMetaPathFor(sessionPath);
+      const stat = fs.statSync(metaPath);
+      if (stat.size > SESSION_META_INDEX_MAX_BYTES) {
+        log.warn(`session-meta is too large to parse safely (${stat.size} bytes): ${metaPath}`);
+        return null;
+      }
+      const meta = JSON.parse(fs.readFileSync(metaPath, "utf-8"));
+      const entry = meta[path.basename(sessionPath)];
+      return entry && typeof entry === "object" ? entry : null;
+    } catch {
+      return null;
+    }
+  }
+
+  _readSessionMemoryEnabledFromMeta(sessionPath: any) {
+    const metaEntry = this._readSessionMetaEntrySync(sessionPath);
+    return typeof metaEntry?.memoryEnabled === "boolean" ? metaEntry.memoryEnabled : null;
+  }
+
+  getSessionMemoryReflectionSnapshot(sessionPath = this.currentSessionPath) {
+    if (!sessionPath) return null;
+    const entry = this._sessionFolderEntry(sessionPath);
+    const liveSnapshot = entry?.memoryReflectionSnapshot;
+    if (liveSnapshot && typeof liveSnapshot === "object" && !Array.isArray(liveSnapshot)) {
+      return liveSnapshot;
+    }
+    const metaSnapshot = this._readSessionMetaEntrySync(sessionPath)?.memoryReflectionSnapshot;
+    return metaSnapshot && typeof metaSnapshot === "object" && !Array.isArray(metaSnapshot)
+      ? metaSnapshot
+      : null;
+  }
+
+  getSessionMemoryEnabled(sessionPath = this.currentSessionPath) {
+    if (!sessionPath) return true;
+    const liveEntry = this._getSessionEntryByPath(sessionPath);
+    if (typeof liveEntry?.memoryEnabled === "boolean") return liveEntry.memoryEnabled;
+    const hibernatedEntry = this._getRuntimeValueForPath(this._hibernatedSessionMeta, sessionPath);
+    if (typeof hibernatedEntry?.memoryEnabled === "boolean") return hibernatedEntry.memoryEnabled;
+    const manifest = this._resolveSessionManifestForPath(sessionPath);
+    if (manifest?.memoryPolicy?.mode === "enabled") return true;
+    if (manifest?.memoryPolicy?.mode === "disabled") return false;
+    const stored = this._readSessionMemoryEnabledFromMeta(sessionPath);
+    return typeof stored === "boolean" ? stored : true;
+  }
+
+  async setSessionMemoryEnabled(sessionPath: any, enabled: any) {
+    if (!sessionPath) {
+      return { ok: false, error: "session memory requires sessionPath", memoryEnabled: true };
+    }
+    this._assertActiveDesktopSessionPath(sessionPath, "setSessionMemoryEnabled");
+    if (this._isDeletedAgentSessionPath(sessionPath)) {
+      throw new Error("setSessionMemoryEnabled: session belongs to a deleted agent");
+    }
+    const next = enabled !== false;
+    const liveEntry = this._getSessionEntryByPath(sessionPath);
+    if (liveEntry) liveEntry.memoryEnabled = next;
+    const hibernatedEntry = this._getRuntimeValueForPath(this._hibernatedSessionMeta, sessionPath);
+    if (hibernatedEntry) hibernatedEntry.memoryEnabled = next;
+    await this.writeSessionMeta(sessionPath, { memoryEnabled: next });
+    const manifest = this._resolveSessionManifestForPath(sessionPath);
+    if (manifest) {
+      this._sessionManifestStore.setMemoryPolicy(manifest.sessionId, {
+        mode: next ? "enabled" : "disabled",
+        inheritedFrom: "session_override",
+      });
+    }
+    this._emitSessionMetadataUpdated(sessionPath, { memoryEnabled: next });
+    return { ok: true, memoryEnabled: next };
+  }
+
+  _updateSessionFolderRuntimeMeta(sessionPath: any, patch: any) {
+    const liveEntry = this._getSessionEntryByPath(sessionPath);
+    if (liveEntry) {
+      if (patch.cwd) liveEntry.cwd = patch.cwd;
+      liveEntry.workspaceFolders = [...(patch.workspaceFolders || [])];
+      liveEntry.authorizedFolders = [...(patch.authorizedFolders || [])];
+    }
+    const hibernated = this._getRuntimeValueForPath(this._hibernatedSessionMeta, sessionPath);
+    if (hibernated) {
+      if (patch.cwd) hibernated.cwd = patch.cwd;
+      hibernated.workspaceFolders = [...(patch.workspaceFolders || [])];
+      hibernated.authorizedFolders = [...(patch.authorizedFolders || [])];
+    }
+  }
+
+  async switchSession(sessionPath: any) {
+    // English only"English only"English only subagent-sessions/English onlyactivity/English only.ephemeral/ English only
+    // English only session English onlylistSessions English only
+    // English only"English only"English only
+    if (!isActiveSessionPath(sessionPath, this._d.agentsDir)) {
+      throw new Error(`switchSession: path must be in active desktop session agents/{id}/sessions/*.jsonl; got ${sessionPath}`);
+    }
+    if (this._isDeletedAgentSessionPath(sessionPath)) {
+      throw new Error("switchSession: session belongs to a deleted agent");
+    }
+    this._assertCurrentActiveSessionLocator(sessionPath, "switchSession");
+
+    // English only session English only pendingModelEnglish only sessionEnglish only
+    this._pendingModel = null;
+
+    const targetAgentId = this.resolveSessionOwnership(sessionPath).agentId;
+    if (targetAgentId && targetAgentId !== this._d.getActiveAgentId()) {
+      // Phase 1: English only agent English only session
+      await this._d.switchAgentOnly(targetAgentId);
+    }
+
+    // English only session-owned state English onlymodel English only PI SDK English only JSONL English only
+    const memoryEnabled = this.getSessionMemoryEnabled(sessionPath);
+
+    // English only map English only
+    const existing = this._getSessionEntryByPath(sessionPath);
+    if (existing) {
+      if (this._session && this._session !== existing.session) {
+        const oldSp = this._session.sessionManager?.getSessionFile?.();
+        if (oldSp) {
+          const oldEntry = this._getSessionEntryByPath(oldSp);
+          const oldAgent = oldEntry ? this._d.getAgentById(oldEntry.agentId) : this._d.getAgent();
+          // fire-and-forgetEnglish onlymemory flush English only switchEnglish onlymemory.md English only onCompiled English only
+          // English only agent._systemPromptEnglish only sessionEnglish only session English only
+          // English only
+          oldAgent?._memoryTicker?.notifySessionEnd(oldSp).catch((err) =>
+            log.warn(`switchSession ${path.basename(oldSp)}: notifySessionEnd failed: ${err.message}`),
+          );
+        }
+      }
+      this._session = existing.session;
+      this._currentSessionPath = sessionPath;
+      existing.lastTouchedAt = Date.now();
+      return existing.session;
+    }
+
+    // English only map English only session English only memory flushEnglish only
+    if (this._session) {
+      const oldSp = this._session.sessionManager?.getSessionFile?.();
+      if (oldSp) {
+        const oldEntry = this._getSessionEntryByPath(oldSp);
+        const oldAgent = oldEntry ? this._d.getAgentById(oldEntry.agentId) : this._d.getAgent();
+        oldAgent?._memoryTicker?.notifySessionEnd(oldSp).catch((err) =>
+          log.warn(`switchSession ${path.basename(oldSp)}: notifySessionEnd failed: ${err.message}`),
+        );
+      }
+    }
+    // #521: English only N English only assistant English only stopReason=error
+    // English only"English only empty_stream"English only UI English only
+    // English onlyrestore English only
+    this._emitSessionHealthWarning(sessionPath);
+    // English only open English only/English only JSONL English only SessionManager.open English only parse English only
+    this._repairOversizedSessionHistory(sessionPath);
+    // #1285: English only open English only toolResultEnglish only SessionManager.openEnglish only
+    this._repairOrphanToolHistory(sessionPath);
+    this._repairInlineMediaHistory(sessionPath);
+
+    // English onlymodel English only PI SDK English only session JSONL English only session-meta.json English only
+    const reminderState = this._getRuntimeValueForPath(this._hibernatedSessionMeta, sessionPath);
+    const sessionMgr = SessionManager.open(sessionPath, this._d.getAgent().sessionDir);
+    const cwd = sessionMgr.getCwd?.() || undefined;
+    const result = await this.createSession(sessionMgr, cwd, memoryEnabled, null, {
+      restore: true,
+      agent: this._d.getAgent(),
+      agentId: targetAgentId || this._d.getActiveAgentId(),
+      reminderState,
+    });
+    return result.session;
+  }
+
+  /** @private English only session English only unhealthy English only log + emit English only */
+  _emitSessionHealthWarning(sessionPath: any) {
+    try {
+      const health = evaluateSessionHealth(sessionPath);
+      if (health.healthy) return;
+      log.warn(
+        `session restore: ${path.basename(sessionPath)} unhealthy (`
+        + `${health.recentErrors}/${health.totalChecked} recent assistant messages had stopReason=error). `
+        + `User may need to start a new session — see #521.`
+      );
+      this._d.emitEvent?.({
+        type: "session_unhealthy_warning",
+        recentErrors: health.recentErrors,
+        totalChecked: health.totalChecked,
+      }, sessionPath);
+    } catch (err) {
+      // English only restoreEnglish only
+      log.warn(`session health check failed for ${path.basename(sessionPath)}: ${err.message}`);
+    }
+  }
+
+  /**
+   * @private #1285 English only SessionManager.open English only
+   * toolResult entryEnglish only toolCall English only SDK English only error/aborted assistantEnglish only
+   * English only tool_calls English only role:"tool" → OpenAI-compatible provider 400English only
+   *
+   * English only open English onlyopen English only SessionManager English only
+   * English only restoreEnglish only provider-compat English only 400English only
+   */
+  _repairOrphanToolHistory(sessionPath: any) {
+    try {
+      const { repaired, removed } = repairOrphanToolResultEntriesInFile(sessionPath);
+      if (repaired) {
+        log.warn(
+          `session restore: ${path.basename(sessionPath)} English only ${removed} English only toolResult `
+          + `(English only tool_calls English only error/aborted assistantEnglish only SDK English only) — see #1285.`
+        );
+      }
+    } catch (err) {
+      log.warn(`orphan tool history repair failed for ${path.basename(sessionPath)}: ${err.message}`);
+    }
+  }
+
+  _repairOversizedSessionHistory(sessionPath: any) {
+    try {
+      const result = repairOversizedSessionEntriesInFile(sessionPath);
+      if (result.repaired) {
+        log.warn(
+          `session restore: ${path.basename(sessionPath)} repaired oversized JSONL lines `
+          + `(projected=${result.projected}, skipped=${result.skipped})`
+        );
+      }
+    } catch (err) {
+      log.warn(`oversized session history repair failed for ${path.basename(sessionPath)}: ${err.message}`);
+    }
+  }
+
+  _projectOversizedSessionHistory(session: any, sessionPath: any) {
+    try {
+      const manager = session?.sessionManager;
+      if (!Array.isArray(manager?.fileEntries)) return;
+      const result = repairOversizedSessionEntries(manager.fileEntries);
+      if (result.projected === 0) return;
+      manager.fileEntries = result.entries;
+      manager._buildIndex?.();
+      manager._rewriteFile?.();
+      log.warn(
+        `session turn: ${path.basename(sessionPath || manager.getSessionFile?.() || "session")} `
+        + `projected ${result.projected} oversized JSONL entries`
+      );
+    } catch (err) {
+      log.warn(`oversized session projection failed: ${err.message}`);
+    }
+  }
+
+  _repairInlineMediaHistory(sessionPath: any) {
+    try {
+      const result = repairSessionInlineMediaEntriesInFile(sessionPath);
+      if (result.repaired) {
+        log.warn(
+          `session restore: ${path.basename(sessionPath)} English only ${result.stripped} English only inline media `
+          + `(image=${result.strippedImages}, video=${result.strippedVideos}, audio=${result.strippedAudios})`
+        );
+      }
+    } catch (err) {
+      log.warn(`inline media history repair failed for ${path.basename(sessionPath)}: ${err.message}`);
+    }
+  }
+
+  /**
+   * Enforce Miko's current model allowlist at the last reusable-session boundary.
+   * Pi sessions retain their model object across turns; a provider refresh can
+   * therefore leave a disabled model usable unless every new turn revalidates
+   * the session-owned `{provider,id}` identity here.
+   *
+   * When the identity is still allowed, bind the freshly rebuilt Miko model
+   * object so api/context/thinking metadata cannot remain stale.
+   */
+  _assertSessionModelAvailable(session: any) {
+    const currentModel = session?.model;
+    const modelId = typeof currentModel?.id === "string" ? currentModel.id : "";
+    const provider = typeof currentModel?.provider === "string" ? currentModel.provider : "";
+    const models = this._d.getModels?.();
+    const allowedModel = modelId && provider && Array.isArray(models?.availableModels)
+      ? findModel(models.availableModels, modelId, provider)
+      : null;
+    const modelRef = provider && modelId ? `${provider}/${modelId}` : "unknown";
+
+    if (!allowedModel) {
+      const error: any = new Error(t("error.modelNotFound", { id: modelRef }));
+      error.code = "MODEL_NOT_AVAILABLE";
+      error.modelRef = modelRef;
+      throw error;
+    }
+
+    if (currentModel !== allowedModel) {
+      const rebound = refreshSessionModelFromRegistry(session, allowedModel);
+      if (rebound !== true || session.model !== allowedModel) {
+        const error: any = new Error(`Failed to rebind active session model: ${modelRef}`);
+        error.code = "MODEL_REBIND_FAILED";
+        error.modelRef = modelRef;
+        throw error;
+      }
+    }
+    return allowedModel;
+  }
+
+  async prompt(text: any, opts: any) {
+    const turnContext = normalizeSessionTurnContext(opts?.context);
+    if (!this._session) {
+      const currentPath = this.currentSessionPath;
+      if (!currentPath) throw new Error(t("error.noActiveSessionPrompt"));
+      this._session = await this.ensureSessionLoaded(currentPath);
+    }
+    this._assertSessionModelAvailable(this._session);
+    this._sessionStarted = true;
+    const sp = this._session.sessionManager?.getSessionFile?.();
+    if (sp) {
+      const entry = this._getSessionEntryByPath(sp);
+      if (entry) entry.lastTouchedAt = Date.now();
+    }
+    const engine = this._d.getEngine?.();
+    ({ text, opts } = await prepareVisionInputForTextOnlyModel({
+      targetModel: this._session.model,
+      text,
+      opts,
+      sessionPath: sp,
+      getVisionBridge: () => engine?.getVisionBridge?.(),
+      visionPolicyTarget: engine,
+      warn: (msg) => (engine?.log || console).warn?.(`[session] ${msg}`),
+      signal: null,
+    } as any));
+    ({ text, opts } = await prepareModelImageInputsForPrompt({ text, opts }));
+    assertVideoInputSupported(this._session.model, opts?.videos);
+    assertAudioInputSupported(this._session.model, opts?.audios);
+    const promptOpts = buildPromptMediaOptions(opts);
+    const nativeMediaTurn = engine?.beginCurrentTurnNativeMedia?.(sp, opts);
+    if (sp && turnContext) this._setRuntimeValueForPath(this._turnContextBySession, sp, turnContext);
+    try {
+      if (sp) this.preflightSessionInput(sp);
+      await this._session.prompt(text, promptOpts);
+    } finally {
+      if (sp && turnContext) this._deleteRuntimeValueForPath(this._turnContextBySession, sp);
+      engine?.endCurrentTurnNativeMedia?.(nativeMediaTurn);
+      pruneSessionInlineMediaHistory(this._session);
+      this._projectOversizedSessionHistory(this._session, sp);
+      if (sp) this._scheduleRuntimePressureCheck(sp, "prompt");
+    }
+    if (sp) {
+      const entry = this._getSessionEntryByPath(sp);
+      const agent = entry ? this._d.getAgentById(entry.agentId) : this._d.getAgent();
+      agent?._memoryTicker?.notifyTurn(sp);
+    }
+  }
+
+  _normalizeAbortReason(options: any, fallback = "abort") {
+    const raw = typeof options === "string" ? options : options?.reason;
+    return typeof raw === "string" && raw.trim() ? raw.trim() : fallback;
+  }
+
+  async abort(options: any = {}) {
+    const reason = this._normalizeAbortReason(options, "abort");
+    const sessionPath = this.currentSessionPath;
+    if (sessionPath) return this.abortSession(sessionPath, { reason });
+    if (!this._session?.isStreaming) return false;
+
+    try {
+      this._session.abort()?.catch?.((err) =>
+        log.warn(`abort focus session: abort failed: ${err.message}`),
+      );
+    } catch (err) {
+      log.warn(`abort focus session: abort failed: ${err.message}`);
+    }
+    this._session = null;
+    this._currentSessionPath = null;
+    this._sessionStarted = false;
+    return true;
+  }
+
+  steer(text: any) {
+    if (!this._session?.isStreaming) return false;
+    const sp = this._session.sessionManager?.getSessionFile?.();
+    if (sp) this.preflightSessionInput(sp);
+    if (sp) {
+      const entry = this._getSessionEntryByPath(sp);
+      if (entry) entry.lastTouchedAt = Date.now();
+    }
+    this._session.steer(text);
+    return true;
+  }
+
+  // ── Path English only APIEnglish onlyPhase 2English only ──
+
+  async promptSession(sessionPath: any, text: any, opts: any, submitOptions: any = {}) {
+    const turnContext = normalizeSessionTurnContext(opts?.context);
+    this._assertActiveDesktopSessionPath(sessionPath, "promptSession");
+    let entry = this._getSessionEntryByPath(sessionPath);
+    if (!entry) {
+      await this.ensureSessionLoaded(sessionPath);
+      entry = this._getSessionEntryByPath(sessionPath);
+    }
+    if (!entry) throw new Error(t("error.sessionNotInCache", { path: sessionPath }));
+    if (sessionPath === this.currentSessionPath && this._session !== entry.session) {
+      this._session = entry.session;
+    }
+    this._assertSessionModelAvailable(entry.session);
+    entry.lastTouchedAt = Date.now();
+    if (entry.sessionVisibility !== "plugin_private" && entry.sessionVisibility !== "private") {
+      entry.visibleInSessionList = true;
+    }
+    if (sessionPath === this.currentSessionPath) this._sessionStarted = true;
+    const engine = this._d.getEngine?.();
+    const abortController = new AbortController();
+    this._setRuntimeValueForPath(this._prePromptAbortControllers, sessionPath, abortController);
+    try {
+      ({ text, opts } = await prepareVisionInputForTextOnlyModel({
+        targetModel: entry.session.model,
+        text,
+        opts,
+        sessionPath,
+        getVisionBridge: () => engine?.getVisionBridge?.(),
+        visionPolicyTarget: engine,
+        warn: (msg) => (engine?.log || console).warn?.(`[session] ${msg}`),
+        signal: abortController.signal,
+      }));
+      ({ text, opts } = await prepareModelImageInputsForPrompt({
+        text,
+        opts,
+        signal: abortController.signal,
+      }));
+    } finally {
+      if (this._getRuntimeValueForPath(this._prePromptAbortControllers, sessionPath) === abortController) {
+        this._deleteRuntimeValueForPath(this._prePromptAbortControllers, sessionPath);
+      }
+    }
+    abortController.signal.throwIfAborted();
+    assertVideoInputSupported(entry.session.model, opts?.videos);
+    assertAudioInputSupported(entry.session.model, opts?.audios);
+    const promptOpts = buildPromptMediaOptions(opts);
+    const nativeMediaTurn = engine?.beginCurrentTurnNativeMedia?.(sessionPath, opts);
+    if (turnContext) this._setRuntimeValueForPath(this._turnContextBySession, sessionPath, turnContext);
+    try {
+      this.preflightSessionInput(sessionPath);
+      if (typeof submitOptions?.afterCachePreflight === "function") {
+        const hookResult = submitOptions.afterCachePreflight();
+        if (hookResult && typeof hookResult.then === "function") {
+          throw new TypeError("promptSession afterCachePreflight must be synchronous");
+        }
+      }
+      await entry.session.prompt(text, promptOpts);
+    } finally {
+      if (turnContext) this._deleteRuntimeValueForPath(this._turnContextBySession, sessionPath);
+      engine?.endCurrentTurnNativeMedia?.(nativeMediaTurn);
+      pruneSessionInlineMediaHistory(entry.session);
+      this._projectOversizedSessionHistory(entry.session, sessionPath);
+      this._scheduleRuntimePressureCheck(sessionPath, "prompt_session");
+    }
+    const agent = this._d.getAgentById(entry.agentId) || this._d.getAgent();
+    agent?._memoryTicker?.notifyTurn(sessionPath);
+  }
+
+  steerSession(sessionPath: any, text: any) {
+    const entry = this._getSessionEntryByPath(sessionPath);
+    if (!entry?.session.isStreaming) return false;
+    this.preflightSessionInput(sessionPath);
+    entry.lastTouchedAt = Date.now();
+    entry.session.steer(text);
+    return true;
+  }
+
+  _emitTurnInputPresentation(sessionPath: any, message: any, deliveryMode: any) {
+    const event = buildTurnInputPresentationEvent(message, { deliveryMode });
+    if (!event) return;
+    this._d.emitEvent?.(event, sessionPath);
+  }
+
+  async deliverCustomMessage(sessionPath: any, message: any, options: any = {}) {
+    if (!sessionPath) throw new Error("deliverCustomMessage: sessionPath is required");
+    this._assertActiveDesktopSessionPath(sessionPath, "deliverCustomMessage");
+    let entry = this._getSessionEntryByPath(sessionPath);
+    if (!entry) {
+      await this.ensureSessionLoaded(sessionPath);
+      entry = this._getSessionEntryByPath(sessionPath);
+    }
+    if (!entry?.session) {
+      throw new Error(`deliverCustomMessage: session not loaded for ${sessionPath}`);
+    }
+    if (typeof entry.session.sendCustomMessage !== "function") {
+      throw new Error("deliverCustomMessage: session does not support custom messages");
+    }
+
+    if (entry.session.isStreaming) {
+      this._assertSessionModelAvailable(entry.session);
+      this.preflightSessionInput(sessionPath);
+      entry.lastTouchedAt = Date.now();
+      await entry.session.sendCustomMessage(message, { deliverAs: "followUp" });
+      this._emitTurnInputPresentation(sessionPath, message, "followUp");
+      return { ok: true, mode: "followUp" };
+    }
+
+    const triggerTurn = options?.triggerTurn !== false;
+    if (triggerTurn) {
+      this._assertSessionModelAvailable(entry.session);
+      this.preflightSessionInput(sessionPath);
+      entry.lastTouchedAt = Date.now();
+      this._emitTurnInputPresentation(sessionPath, message, "triggerTurn");
+    } else {
+      entry.lastTouchedAt = Date.now();
+    }
+    await entry.session.sendCustomMessage(message, { triggerTurn });
+    return { ok: true, mode: triggerTurn ? "triggerTurn" : "notifyOnly" };
+  }
+
+  recordCustomEntry(sessionPath: any, customType: any, data: any) {
+    if (!sessionPath) throw new Error("recordCustomEntry: sessionPath is required");
+    if (!customType) throw new Error("recordCustomEntry: customType is required");
+    this._assertActiveDesktopSessionPath(sessionPath, "recordCustomEntry");
+
+    const liveManager = this._getSessionEntryByPath(sessionPath)?.session?.sessionManager;
+    if (typeof liveManager?.appendCustomEntry === "function") {
+      liveManager.appendCustomEntry(customType, data);
+      return { ok: true, mode: "live" };
+    }
+
+    const manager = SessionManager.open(sessionPath, path.dirname(sessionPath));
+    manager.appendCustomEntry(customType, data);
+    return { ok: true, mode: "file" };
+  }
+
+  _cleanupAbortedSessionSidecars(sessionPath: any, reason: any) {
+    if (!sessionPath) return;
+    const shortPath = path.basename(sessionPath);
+    const taskRegistry = this._d.getTaskRegistry?.() || this._d.taskRegistry || this._d.getEngine?.()?.taskRegistry;
+    const subagentRuns = this._d.getSubagentRunStore?.() || this._d.subagentRuns || this._d.getEngine?.()?.subagentRuns;
+    const subagentThreads = this._d.getSubagentThreadStore?.() || this._d.subagentThreads || this._d.getEngine?.()?.subagentThreads;
+    const deferredResults = this._d.getDeferredResultStore?.() || this._d.deferredResults || this._d.getEngine?.()?.deferredResults;
+    const confirmStore = this._d.getConfirmStore?.() || this._d.confirmStore || this._d.getEngine?.()?.confirmStore;
+
+    try {
+      const sessionId = this._d.getSessionIdForPath?.(sessionPath);
+      if (sessionId) {
+        this._d.abortToolExecutionsForSession?.({ sessionId, sessionPath }, reason);
+      } else if (this._d.abortToolExecutionsForSession) {
+        throw new Error("sessionId is unavailable");
+      }
+    } catch (err) {
+      log.warn(`abort cleanup ${shortPath}: tool execution cleanup failed: ${err.message}`);
+    }
+
+    try {
+      taskRegistry?.abortByParentSession?.(sessionPath, reason);
+    } catch (err) {
+      log.warn(`abort cleanup ${shortPath}: task cleanup failed: ${err.message}`);
+    }
+    try {
+      subagentRuns?.abortByParentSession?.(sessionPath, reason);
+    } catch (err) {
+      log.warn(`abort cleanup ${shortPath}: subagent run cleanup failed: ${err.message}`);
+    }
+    try {
+      subagentThreads?.removeBySession?.(sessionPath);
+    } catch (err) {
+      log.warn(`abort cleanup ${shortPath}: subagent thread cleanup failed: ${err.message}`);
+    }
+    try {
+      deferredResults?.suppressBySession?.(sessionPath, reason);
+    } catch (err) {
+      log.warn(`abort cleanup ${shortPath}: deferred cleanup failed: ${err.message}`);
+    }
+    try {
+      confirmStore?.abortBySession?.(sessionPath);
+    } catch (err) {
+      log.warn(`abort cleanup ${shortPath}: confirm cleanup failed: ${err.message}`);
+    }
+    try {
+      this._d.closeTerminalsForSession?.(sessionPath);
+    } catch (err) {
+      log.warn(`abort cleanup ${shortPath}: terminal cleanup failed: ${err.message}`);
+    }
+    try {
+      const closeBrowser = BrowserManager.instance().closeBrowserForSession(sessionPath);
+      Promise.resolve(closeBrowser).catch((err) =>
+        log.warn(`abort cleanup ${shortPath}: browser cleanup failed: ${err.message}`),
+      );
+    } catch (err) {
+      log.warn(`abort cleanup ${shortPath}: browser cleanup failed: ${err.message}`);
+    }
+  }
+
+  async abortSession(sessionPath: any, options: any = {}) {
+    const reason = this._normalizeAbortReason(options, "abort");
+    const pending = this._getRuntimeValueForPath(this._prePromptAbortControllers, sessionPath);
+    if (pending) {
+      pending.abort();
+      this._deleteRuntimeValueForPath(this._prePromptAbortControllers, sessionPath);
+      this._cleanupAbortedSessionSidecars(sessionPath, reason);
+      this._d.emitEvent?.({
+        type: "session_status",
+        isStreaming: false,
+        aborted: true,
+        reason,
+      }, sessionPath);
+      return true;
+    }
+    this._cleanupAbortedSessionSidecars(sessionPath, reason);
+    const entry = this._getSessionEntryByPath(sessionPath);
+    if (!entry?.session.isStreaming) return false;
+    return this._forceReleaseStreamingSession(entry, sessionPath, reason);
+  }
+
+  // ── Mid-session model switch ──
+
+  /**
+   * English only session English only sessionEnglish only
+   * English only/English only
+   *
+   * @param {string} sessionPath
+   * @param {object} newModel - Pi SDK Model English only
+   * @returns {Promise<{ adaptations: string[] }>}
+   */
+  async switchSessionModel(sessionPath: any, newModel: any) {
+    this._assertActiveDesktopSessionPath(sessionPath, "switchSessionModel");
+    let entry = this._getSessionEntryByPath(sessionPath);
+    if (!entry) {
+      await this.ensureSessionLoaded(sessionPath);
+      entry = this._getSessionEntryByPath(sessionPath);
+    }
+    if (!entry) throw new Error(t("error.sessionNotInCache", { path: sessionPath }));
+    if (sessionPath === this.currentSessionPath && this._session !== entry.session) {
+      this._session = entry.session;
+    }
+
+    const { session } = entry;
+
+    // English only guard
+    if (entry._switching) {
+      throw new Error("Model switch already in progress for this session");
+    }
+    if (session.isCompacting) {
+      throw new Error("Cannot switch model while compaction is in progress");
+    }
+
+    entry._switching = true;
+    const adaptations = [];
+    const oldModel = session.model;
+
+    try {
+      // English only token English only
+      const msgs = session.agent?.state?.messages || [];
+      const usage = session.getContextUsage?.();
+      let currentTokens = usage?.tokens;
+      if (currentTokens == null) {
+        // fallback: English only
+        currentTokens = msgs.reduce((sum, m) => sum + estimateTokens(m), 0);
+      }
+
+      const effectiveWindow = Math.floor(newModel.contextWindow * 0.9) - 4000;
+
+      if (currentTokens > effectiveWindow) {
+        // English only compact/truncate English only
+        const lastUserIdx = msgs.findLastIndex(m => m.role === "user");
+        if (lastUserIdx >= 0) {
+          const lastTurnTokens = msgs.slice(lastUserIdx).reduce((s, m) => s + estimateTokens(m), 0);
+          if (lastTurnTokens > effectiveWindow) {
+            throw new Error("English only");
+          }
+        }
+
+        // English only
+        try {
+          const compactionResult = await this._compactWithModel(sessionPath, session, effectiveWindow, oldModel);
+          const hardTruncated = compactionResult?.details?.reason === "cache-preserving-compaction-hard-truncate";
+          adaptations.push(hardTruncated ? "truncated" : "compacted");
+        } catch (compactErr) {
+          log.warn(`compactWithModel failed, falling back to hard truncate: ${compactErr.message}`);
+          // English only
+          try {
+            await this._hardTruncate(sessionPath, session, effectiveWindow);
+            adaptations.push("truncated");
+          } catch (truncErr) {
+            throw new Error(`Failed to fit context into new model window: ${truncErr.message}`);
+          }
+        }
+
+        // English only/English only
+        const postMsgs = session.agent.state.messages;
+        const postTokens = postMsgs.reduce((sum, m) => sum + estimateTokens(m), 0);
+        if (postTokens > effectiveWindow) {
+          throw new Error(
+            `Context still exceeds new model window after adaptation (${postTokens} > ${effectiveWindow})`
+          );
+        }
+      }
+
+      // English only
+      await session.setModel(newModel);
+      entry.modelId = newModel.id;
+      entry.modelProvider = newModel.provider;
+      const models = this._d.getModels();
+      const currentThinkingLevel = this.getSessionThinkingLevel(sessionPath);
+      const nextThinkingLevel = normalizeThinkingLevelForModel(currentThinkingLevel, newModel);
+      entry.thinkingLevel = nextThinkingLevel;
+      session.setThinkingLevel?.(models?.resolveThinkingLevel?.(nextThinkingLevel) || nextThinkingLevel);
+      this.writeSessionMeta(sessionPath, { thinkingLevel: nextThinkingLevel });
+      this._renewCachePrefixContract(sessionPath, entry, "model_switch");
+
+      return { adaptations, thinkingLevel: nextThinkingLevel };
+    } finally {
+      entry._switching = false;
+    }
+  }
+
+  /**
+   * English only model switch English only
+   * @private
+   */
+  async _compactWithModel(sessionPath: any, session: any, effectiveWindow: any, model: any) {
+    if (!sessionPath) throw new Error("model-switch compaction requires an explicit session path");
+    const sessionId = this._sessionIdForPath(sessionPath);
+    return await runCachePreservingCompactionForSession(session, {
+      model,
+      settings: {
+        enabled: true,
+        reserveTokens: 4000,
+        keepRecentTokens: effectiveWindow,
+      },
+      emitLifecycle: true,
+      lifecycleReason: "model_switch",
+      usageLedger: this._d.getUsageLedger?.(),
+      usageContext: {
+        source: {
+          subsystem: "compaction",
+          operation: "compact",
+          surface: "desktop",
+          trigger: "overflow",
+        },
+        attribution: {
+          kind: "session",
+          agentId: this.resolveSessionOwnership(sessionPath).agentId || this._d.getActiveAgentId?.() || null,
+          ...(sessionId ? { sessionId } : {}),
+          sessionPath,
+        },
+      },
+      onCompacted: () => this._markSessionCompacted(sessionPath),
+    });
+  }
+
+  _markSessionCompacted(sessionPath: any) {
+    if (!sessionPath) return false;
+    const entry = this._getSessionEntryByPath(sessionPath);
+    if (!entry) return false;
+    const revision = Number.isFinite(entry.reminderCompactionRevision)
+      ? Math.max(0, Math.floor(entry.reminderCompactionRevision))
+      : 0;
+    entry.reminderCompactionRevision = revision + 1;
+    return true;
+  }
+
+  /**
+   * English only API English only
+   * @private
+   */
+  async _hardTruncate(sessionPath: any, session: any, effectiveWindow: any) {
+    if (!sessionPath) throw new Error("model-switch hard truncation requires an explicit session path");
+    const sm = session.sessionManager;
+    const pathEntries = sm.getBranch();
+    const reason = "model_switch";
+    session?._emit?.({ type: "compaction_start", reason });
+
+    try {
+      const result = computeHardTruncation(pathEntries, effectiveWindow, {
+        summary: "[English only]",
+        reason: "model-switch-truncation",
+      });
+      if (!result) {
+        throw new Error("Cannot hard-truncate: not enough messages or cut at beginning");
+      }
+
+      const saved = await appendCompactionResultToSession(session, result, {
+        fromExtension: false,
+        onCompacted: () => this._markSessionCompacted(sessionPath),
+      });
+      session?._emit?.({
+        type: "compaction_end",
+        reason,
+        result: saved,
+        aborted: false,
+        willRetry: false,
+      });
+      return saved;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      session?._emit?.({
+        type: "compaction_end",
+        reason,
+        result: undefined,
+        aborted: false,
+        willRetry: false,
+        errorMessage: `Compaction failed: ${message}`,
+      });
+      throw error;
+    }
+  }
+
+  /** Get plan mode for the current (focused) session */
+  getPlanMode() {
+    return isReadOnlyPermissionMode(this.getPermissionMode());
+  }
+
+  _readStoredPermissionModeDefault() {
+    const prefs = this._d.getPrefs?.();
+    if (typeof prefs?.getSessionPermissionModeDefault !== "function") {
+      return DEFAULT_SESSION_PERMISSION_MODE;
+    }
+    return normalizeSessionPermissionMode(prefs.getSessionPermissionModeDefault());
+  }
+
+  _getDefaultPermissionMode() {
+    return normalizeSessionPermissionMode(
+      this._runtimePermissionModeDefault ?? this._readStoredPermissionModeDefault(),
+    );
+  }
+
+  _setDefaultPermissionMode(mode: any, { persist = true }: any = {}) {
+    let normalized = normalizeSessionPermissionMode(mode);
+    this._runtimePermissionModeDefault = normalized;
+    if (!persist) return normalized;
+
+    const prefs = this._d.getPrefs?.();
+    if (typeof prefs?.setSessionPermissionModeDefault === "function") {
+      normalized = normalizeSessionPermissionMode(prefs.setSessionPermissionModeDefault(normalized));
+      this._runtimePermissionModeDefault = normalized;
+    }
+    return normalized;
+  }
+
+  getPermissionModeDefault() {
+    return this._getDefaultPermissionMode();
+  }
+
+  setPermissionModeDefault(mode: any) {
+    return this._setDefaultPermissionMode(mode);
+  }
+
+  getPermissionMode(sessionPath = this.currentSessionPath) {
+    if (!sessionPath) return this._pendingPermissionMode || this._getDefaultPermissionMode();
+    const entry = this._sessionFolderEntry(sessionPath);
+    if (!entry) {
+      const manifest = this._resolveSessionManifestForPath(sessionPath);
+      if (manifest?.permissionModeSnapshot?.mode) {
+        return normalizeSessionPermissionMode(manifest.permissionModeSnapshot.mode);
+      }
+    }
+    return normalizeSessionPermissionMode(entry || { permissionMode: this._getDefaultPermissionMode() });
+  }
+
+  getSessionThinkingLevel(sessionPath = this.currentSessionPath) {
+    const fallback = this.getDefaultThinkingLevel();
+    if (!sessionPath) return fallback;
+    const entry = this._sessionFolderEntry(sessionPath);
+    if (!entry) {
+      const manifest = this._resolveSessionManifestForPath(sessionPath);
+      if (manifest?.thinkingLevel) return normalizeSessionThinkingLevel(manifest.thinkingLevel);
+    }
+    return normalizeSessionThinkingLevel(entry?.thinkingLevel || fallback);
+  }
+
+  async setSessionThinkingLevel(sessionPath: any, level: any) {
+    if (!sessionPath) {
+      return { ok: false, error: "session thinking level requires sessionPath" };
+    }
+    const entry = this._getSessionEntryByPath(sessionPath);
+    if (!entry?.session) {
+      const meta = this._getRuntimeValueForPath(this._hibernatedSessionMeta, sessionPath);
+      if (meta) {
+        const nextLevel = normalizeSessionThinkingLevel(level);
+        meta.thinkingLevel = nextLevel;
+        await this.writeSessionMeta(sessionPath, { thinkingLevel: nextLevel });
+        const manifest = this._resolveSessionManifestForPath(sessionPath);
+        if (manifest) this._sessionManifestStore.setThinkingLevel(manifest.sessionId, nextLevel);
+        this._emitSessionMetadataUpdated(sessionPath, { thinkingLevel: nextLevel });
+        return { ok: true, thinkingLevel: nextLevel };
+      }
+      return { ok: false, error: "session not found", thinkingLevel: this.getSessionThinkingLevel(sessionPath) };
+    }
+    const models = this._d.getModels();
+    const nextLevel = normalizeThinkingLevelForModel(level, entry.session.model);
+    entry.thinkingLevel = nextLevel;
+    entry.session.setThinkingLevel?.(models.resolveThinkingLevel(nextLevel));
+    await this.writeSessionMeta(sessionPath, { thinkingLevel: nextLevel });
+    const manifest = this._resolveSessionManifestForPath(sessionPath);
+    if (manifest) this._sessionManifestStore.setThinkingLevel(manifest.sessionId, nextLevel);
+    this._emitSessionMetadataUpdated(sessionPath, { thinkingLevel: nextLevel });
+    return { ok: true, thinkingLevel: nextLevel };
+  }
+
+  getAccessMode(sessionPath = this.currentSessionPath) {
+    return legacyAccessModeFromPermissionMode(this.getPermissionMode(sessionPath));
+  }
+
+  setPendingAccessMode(mode: any) {
+    return this.setPendingPermissionMode(mode);
+  }
+
+  setPendingPermissionMode(mode: any) {
+    const nextMode = normalizeSessionPermissionMode(mode);
+    this._setDefaultPermissionMode(nextMode);
+    this._pendingPermissionMode = nextMode;
+    this._emitPermissionModeChanged(nextMode, null);
+    return { ok: true, mode: nextMode, enabled: isReadOnlyPermissionMode(nextMode) };
+  }
+
+  _applyPermissionModeToEntry(sessionPath: any, entry: any, nextMode: any) {
+    entry.permissionMode = nextMode;
+    entry.accessMode = legacyAccessModeFromPermissionMode(nextMode);
+    entry.planMode = isReadOnlyPermissionMode(nextMode);
+    this.writeSessionMeta(sessionPath, {
+      permissionMode: entry.permissionMode,
+      accessMode: entry.accessMode,
+      planMode: entry.planMode,
+    });
+    const manifest = this._resolveSessionManifestForPath(sessionPath);
+    if (manifest) {
+      this._sessionManifestStore.setPermissionModeSnapshot(manifest.sessionId, {
+        mode: nextMode,
+        source: "session_override",
+      });
+    }
+    this._emitPermissionModeChanged(nextMode, sessionPath);
+    return { ok: true, mode: nextMode, enabled: entry.planMode };
+  }
+
+  setCurrentSessionPermissionMode(mode: any) {
+    const nextMode = normalizeSessionPermissionMode(mode);
+    const sp = this.currentSessionPath;
+    if (!sp) {
+      return {
+        ok: false,
+        error: "current session permission mode requires an active session",
+        mode: this._getDefaultPermissionMode(),
+      };
+    }
+    const entry = this._getSessionEntryByPath(sp);
+    if (!entry) {
+      const meta = this._getRuntimeValueForPath(this._hibernatedSessionMeta, sp);
+      if (meta) return this._applyPermissionModeToEntry(sp, meta, nextMode);
+      return {
+        ok: false,
+        error: "current session not found",
+        mode: this.getPermissionMode(sp),
+      };
+    }
+    return this._applyPermissionModeToEntry(sp, entry, nextMode);
+  }
+
+  setSessionPermissionMode(sessionPath: any, mode: any, _options: any = {}) {
+    const nextMode = normalizeSessionPermissionMode(mode);
+    if (!sessionPath) {
+      return {
+        ok: false,
+        error: "session permission mode requires sessionPath",
+        mode: this._getDefaultPermissionMode(),
+      };
+    }
+    const entry = this._getSessionEntryByPath(sessionPath);
+    if (!entry) {
+      const meta = this._getRuntimeValueForPath(this._hibernatedSessionMeta, sessionPath);
+      if (meta) {
+        return this._applyPermissionModeToEntry(sessionPath, meta, nextMode);
+      }
+      return {
+        ok: false,
+        error: "session not found",
+        mode: this.getPermissionMode(sessionPath),
+      };
+    }
+    return this._applyPermissionModeToEntry(sessionPath, entry, nextMode);
+  }
+
+  setPermissionMode(mode: any) {
+    const nextMode = normalizeSessionPermissionMode(mode);
+    const sp = this.currentSessionPath;
+    if (sp) {
+      const entry = this._getSessionEntryByPath(sp);
+      if (!entry) {
+        const meta = this._getRuntimeValueForPath(this._hibernatedSessionMeta, sp);
+        if (meta) return this._applyPermissionModeToEntry(sp, meta, nextMode);
+      }
+      if (!entry) return { ok: false, mode: this.getPermissionMode(sp) };
+      return this._applyPermissionModeToEntry(sp, entry, nextMode);
+    }
+
+    return this.setPendingPermissionMode(nextMode);
+  }
+
+  setAccessMode(mode: any) {
+    return this.setPermissionMode(mode);
+  }
+
+  /** Backward-compatible route for the old Plan Mode API. */
+  setPlanMode(enabled: any) {
+    return this.setPermissionMode(enabled ? SESSION_PERMISSION_MODES.READ_ONLY : SESSION_PERMISSION_MODES.OPERATE);
+  }
+
+  _emitPermissionModeChanged(mode: any, sessionPath: any) {
+    const normalized = normalizeSessionPermissionMode(mode);
+    const readOnly = isReadOnlyPermissionMode(normalized);
+    const accessMode = legacyAccessModeFromPermissionMode(normalized);
+    this._d.emitEvent({ type: "permission_mode", mode: normalized, readOnly }, sessionPath);
+    this._d.emitEvent({ type: "access_mode", mode: accessMode, permissionMode: normalized, readOnly }, sessionPath);
+    this._d.emitEvent({ type: "plan_mode", enabled: readOnly, mode: normalized }, sessionPath);
+    const label = normalized === SESSION_PERMISSION_MODES.READ_ONLY
+      ? "English only"
+      : (normalized === SESSION_PERMISSION_MODES.ASK
+        ? "English only"
+        : (normalized === SESSION_PERMISSION_MODES.AUTO ? "English only" : "English only"));
+    this._d.emitDevLog(`Permission Mode: ${label}`, "info");
+  }
+
+  _emitSessionMetadataUpdated(sessionPath: any, metadata: any) {
+    if (!sessionPath || !metadata || typeof metadata !== "object") return;
+    this._d.emitEvent({
+      type: "session_metadata_updated",
+      metadata: { ...metadata },
+    }, sessionPath);
+  }
+
+  /**
+   * English only session English only {id, provider}English only
+   *
+   * English onlyentry English only modelId + modelProvider English onlysession English only switchSessionModel
+   * English only providerEnglish only session English only null——
+   * English only id English only
+   */
+  getCurrentSessionModelRef() {
+    const sp = this.currentSessionPath;
+    if (!sp) return null;
+    const entry = this._sessionFolderEntry(sp);
+    if (!entry?.modelId || !entry?.modelProvider) return null;
+    return { id: entry.modelId, provider: entry.modelProvider };
+  }
+
+  /** English only streaming English only session */
+  async abortAllStreaming() {
+    let count = 0;
+    for (const [sessionKey, entry] of this._sessions) {
+      const sp = this._sessionPathForEntry(entry, sessionKey);
+      if (entry.session.isStreaming) {
+        this._cleanupAbortedSessionSidecars(sp, "abort_all");
+        if (this._forceReleaseStreamingSession(entry, sp, "abort_all")) count++;
+      }
+    }
+    return count;
+  }
+
+  // ── Lifecycle teardown (English only) ──
+
+  /**
+   * English only streaming English only sessionEnglish only
+   *
+   * English only provider stream English only
+   * Miko English only sessionPath English only SDK abort English only
+   * English only session English only SDK agent English only
+   * English only delta English only
+   *
+   * @param {object} entry
+   * @param {string} sessionPath
+   * @param {string} reason
+   * @returns {boolean}
+   * @private
+   */
+  _forceReleaseStreamingSession(entry: any, sessionPath: any, reason: any) {
+    if (!entry?.session?.isStreaming) return false;
+
+    const session = entry.session;
+    const spShort = sessionPath ? path.basename(sessionPath) : "(anon)";
+    entry.lastTouchedAt = Date.now();
+
+    this._clearRuntimePressureTimer(sessionPath);
+    this._deleteRuntimeValueForPath(this._hibernatedSessionMeta, sessionPath);
+    this._deleteRuntimeValueForPath(this._sessions, sessionPath);
+    if (this._session === session || this.currentSessionPath === sessionPath) {
+      this._session = null;
+      this._currentSessionPath = null;
+      this._sessionStarted = false;
+    }
+
+    const unsub = entry.unsub;
+    entry.unsub = null;
+    try {
+      unsub?.();
+    } catch (err) {
+      log.warn(`forceRelease[${reason}] ${spShort}: unsub failed: ${err.message}`);
+    }
+
+    this._d.emitEvent?.({
+      type: "session_status",
+      isStreaming: false,
+      aborted: true,
+      reason,
+    }, sessionPath);
+
+    try {
+      const abortPromise = session.abort?.();
+      Promise.resolve(abortPromise).catch((err) =>
+        log.warn(`forceRelease[${reason}] ${spShort}: abort failed: ${err.message}`),
+      );
+    } catch (err) {
+      log.warn(`forceRelease[${reason}] ${spShort}: abort failed: ${err.message}`);
+    }
+
+    try {
+      session.dispose?.();
+    } catch (err) {
+      log.warn(`forceRelease[${reason}] ${spShort}: session.dispose failed: ${err.message}`);
+    }
+
+    this._teardownSessionEntry(entry, sessionPath, reason).catch((err) =>
+      log.warn(`forceRelease[${reason}] ${spShort}: teardown failed: ${err.message}`),
+    );
+    return true;
+  }
+
+  /**
+   * English only sessionEntry English only
+   *
+   * English only:
+   *   1. emit session_shutdown — English only SDK English only setInterval / store English only
+   *   2. unsub — English only Miko English only session English only
+   *   3. session.dispose — English only SDK English only agent English only event listeners
+   *
+   * English only log.warn English only, English only
+   *
+   * English only: SDK English only AgentSession.dispose() English only emit session_shutdown,
+   * English only emit, English only deferred-result-ext English only 30 English only setInterval
+   * English only
+   *
+   * @param {object} entry - sessionEntry (session, unsub, agentId, ...)
+   * @param {string} sessionPath - English only
+   * @param {string} reason - teardown English only (lru / close / close_all / isolated)
+   * @private
+   */
+  async _teardownSessionEntry(entry: any, sessionPath: any, reason: any) {
+    if (!entry) return;
+    const spShort = sessionPath ? path.basename(sessionPath) : "(anon)";
+    await teardownSessionResources({
+      session: entry.session,
+      unsub: entry.unsub,
+      label: `teardown[${reason}] ${spShort}`,
+      warn: (msg) => log.warn(msg),
+    });
+  }
+
+  _canHibernateSessionRuntime(entry: any, sessionPath: any) {
+    if (!entry?.session || !sessionPath) return false;
+    if (entry.session.isStreaming || entry.session.isCompacting || entry._switching) return false;
+    if (this._hasRuntimeValueForPath(this._prePromptAbortControllers, sessionPath)) return false;
+    const pendingDeferred = this._d.getDeferredResultStore?.()?.listPending?.(sessionPath);
+    if (Array.isArray(pendingDeferred) && pendingDeferred.length > 0) return false;
+    return true;
+  }
+
+  async hibernateSessionRuntime(sessionPath: any, reason = "memory_pressure") {
+    const entry = this._getSessionEntryByPath(sessionPath);
+    if (!entry) return false;
+    if (!this._canHibernateSessionRuntime(entry, sessionPath)) return false;
+
+    const isFocus = this._session === entry.session || this.currentSessionPath === sessionPath;
+    if (isFocus) this._currentSessionPath = sessionPath;
+    this._setRuntimeValueForPath(this._hibernatedSessionMeta, sessionPath, {
+      sessionId: entry.sessionId || this._sessionRuntimeKeyForPath(sessionPath, { warn: false }),
+      sessionPath,
+      agentId: entry.agentId,
+      memoryEnabled: entry.memoryEnabled,
+      experienceEnabled: entry.experienceEnabled,
+      modelId: entry.modelId,
+      modelProvider: entry.modelProvider,
+      cwd: entry.cwd || entry.session?.sessionManager?.getCwd?.() || null,
+      workspaceFolders: Array.isArray(entry.workspaceFolders) ? [...entry.workspaceFolders] : [],
+      authorizedFolders: Array.isArray(entry.authorizedFolders) ? [...entry.authorizedFolders] : [],
+      permissionMode: entry.permissionMode,
+      accessMode: entry.accessMode,
+      planMode: entry.planMode,
+      thinkingLevel: entry.thinkingLevel,
+      toolNames: Array.isArray(entry.toolNames) ? [...entry.toolNames] : entry.toolNames,
+      reminderEnvCursor: entry.reminderEnvCursor,
+      reminderEnvStartSeq: entry.reminderEnvStartSeq,
+      lastTimeObservedAt: entry.lastTimeObservedAt,
+      reminderCompactionRevision: entry.reminderCompactionRevision,
+      reminderConsumedCompactionRevision: entry.reminderConsumedCompactionRevision,
+      reminderAcceptedUnavailableToolNames: Array.isArray(entry.reminderAcceptedUnavailableToolNames)
+        ? [...entry.reminderAcceptedUnavailableToolNames]
+        : [],
+      reminderUnavailableRevision: entry.reminderUnavailableRevision,
+      contextUsage: entry.session?.getContextUsage?.() || null,
+      hibernatedAt: Date.now(),
+    });
+    await this._teardownSessionEntry(entry, sessionPath, reason);
+    this._deleteRuntimeValueForPath(this._sessions, sessionPath);
+    this._clearRuntimePressureTimer(sessionPath);
+    if (isFocus) {
+      this._session = null;
+    }
+    log.log(`session runtime hibernated (${reason}): ${path.basename(sessionPath)}`);
+    return true;
+  }
+
+  checkRuntimeMemoryPressure(sessionPath: any, reason = "manual") {
+    return this._checkRuntimeMemoryPressure(sessionPath, reason);
+  }
+
+  async _checkRuntimeMemoryPressure(sessionPath: any, reason: any) {
+    const entry = this._getSessionEntryByPath(sessionPath);
+    if (!entry) return { hibernated: false, reason: "not_loaded" };
+    if (!this._memoryPressure.enabled) return { hibernated: false, reason: "disabled" };
+    if (!this._canHibernateSessionRuntime(entry, sessionPath)) {
+      return { hibernated: false, reason: "busy" };
+    }
+
+    const retainedBytes = estimateSessionRuntimeRetainedBytes(entry.session);
+    const memory = this._readMemoryUsage();
+    const thresholds = this._memoryPressure.thresholds;
+    const externalBytes = (memory.external || 0) + (memory.arrayBuffers || 0);
+    const payloadPressure = retainedBytes >= thresholds.highPayloadBytes;
+    const processPressure = memory.rss >= thresholds.highRssBytes || externalBytes >= thresholds.highExternalBytes;
+    const shouldHibernate = payloadPressure || (processPressure && retainedBytes >= thresholds.minRetainedBytes);
+    if (!shouldHibernate) {
+      return { hibernated: false, reason: "below_threshold", retainedBytes, memory };
+    }
+
+    const hibernated = await this.hibernateSessionRuntime(sessionPath, `memory_pressure:${reason}`);
+    return {
+      hibernated,
+      reason: hibernated ? "memory_pressure" : "busy",
+      retainedBytes,
+      memory,
+    };
+  }
+
+  _readMemoryUsage() {
+    try {
+      const usage = this._memoryPressure.getMemoryUsage();
+      return {
+        rss: Number(usage?.rss) || 0,
+        heapUsed: Number(usage?.heapUsed) || 0,
+        external: Number(usage?.external) || 0,
+        arrayBuffers: Number(usage?.arrayBuffers) || 0,
+      };
+    } catch (err) {
+      log.warn(`memory pressure usage read failed: ${err.message}`);
+      return { rss: 0, heapUsed: 0, external: 0, arrayBuffers: 0 };
+    }
+  }
+
+  _scheduleRuntimePressureCheck(sessionPath: any, reason = "post_turn") {
+    if (!this._memoryPressure.enabled || !sessionPath) return;
+    const entry = this._getSessionEntryByPath(sessionPath);
+    if (!entry) return;
+    const scheduledSession = entry.session;
+    this._clearRuntimePressureTimer(sessionPath);
+    const delay = Math.max(0, Number(this._memoryPressure.thresholds.checkDelayMs) || 0);
+    const timer = setTimeout(() => {
+      this._deleteRuntimeValueForPath(this._runtimePressureTimers, sessionPath);
+      const current = this._getSessionEntryByPath(sessionPath);
+      if (!current || current.session !== scheduledSession) return;
+      this._checkRuntimeMemoryPressure(sessionPath, reason).catch((err) => {
+        log.warn(`runtime pressure check failed for ${path.basename(sessionPath)}: ${err.message}`);
+      });
+    }, delay);
+    timer.unref?.();
+    this._setRuntimeValueForPath(this._runtimePressureTimers, sessionPath, timer);
+  }
+
+  _clearRuntimePressureTimer(sessionPath: any) {
+    const timer = this._getRuntimeValueForPath(this._runtimePressureTimers, sessionPath);
+    if (!timer) return;
+    clearTimeout(timer);
+    this._deleteRuntimeValueForPath(this._runtimePressureTimers, sessionPath);
+  }
+
+  // ── Session English only ──
+
+  async discardSessionRuntime(sessionPath: any, reason = "discard", options: { skipMemory?: boolean } = {}) {
+    if (!sessionPath) return false;
+    this._clearRuntimePressureTimer(sessionPath);
+    const hadHibernated = this._deleteRuntimeValueForPath(this._hibernatedSessionMeta, sessionPath);
+    const entry = this._getSessionEntryByPath(sessionPath);
+    if (entry) {
+      const agent = this._d.getAgentById(entry.agentId) || this._d.getAgent();
+      if (options.skipMemory !== true) {
+        agent?._memoryTicker?.notifySessionEnd(sessionPath).catch((err) =>
+          log.warn(`discardSessionRuntime ${path.basename(sessionPath)}: notifySessionEnd failed: ${err.message}`),
+        );
+      }
+      if (entry.session.isStreaming) {
+        this._forceReleaseStreamingSession(entry, sessionPath, reason);
+      } else {
+        await this._teardownSessionEntry(entry, sessionPath, reason);
+        this._deleteRuntimeValueForPath(this._sessions, sessionPath);
+      }
+    }
+
+    // English only session English only pending confirmation / deferred result
+    this._d.getConfirmStore?.()?.abortBySession(sessionPath);
+    this._d.getDeferredResultStore?.()?.clearBySession(sessionPath);
+    if (sessionPath) {
+      try {
+        this._d.closeTerminalsForSession?.(sessionPath);
+      } catch (err) {
+        log.warn(`discardSessionRuntime ${path.basename(sessionPath)}: close terminals failed: ${err.message}`);
+      }
+    }
+    if (sessionPath === this.currentSessionPath) {
+      this._session = null;
+      this._currentSessionPath = null;
+      this._sessionStarted = false;
+    }
+    const discarded = !!entry || hadHibernated;
+    if (discarded && typeof this._d.onSessionRuntimeDiscarded === "function") {
+      try {
+        await this._d.onSessionRuntimeDiscarded(sessionPath, reason);
+      } catch (err) {
+        log.warn(`discardSessionRuntime ${path.basename(sessionPath)}: runtime state cleanup failed: ${(err as any).message}`);
+      }
+    }
+    return discarded;
+  }
+
+  async discardSessionsForAgent(agentId: any, reason = "agent deleted") {
+    if (!agentId) return 0;
+    const paths = new Set();
+    for (const [sessionKey, entry] of this._sessions) {
+      const sessionPath = this._sessionPathForEntry(entry, sessionKey);
+      const entryAgentId = entry?.agentId || this.resolveSessionOwnership(sessionPath).agentId;
+      if (entryAgentId === agentId) paths.add(sessionPath);
+    }
+    for (const [sessionKey, entry] of this._hibernatedSessionMeta) {
+      const sessionPath = this._sessionPathForEntry(entry, sessionKey);
+      const entryAgentId = entry?.agentId || this.resolveSessionOwnership(sessionPath).agentId;
+      if (entryAgentId === agentId) paths.add(sessionPath);
+    }
+    let discarded = 0;
+    for (const sessionPath of paths) {
+      if (await this.discardSessionRuntime(sessionPath, reason)) discarded += 1;
+    }
+    return discarded;
+  }
+
+  async closeSession(sessionPath: any) {
+    return this.discardSessionRuntime(sessionPath, "close");
+  }
+
+  async closeAllSessions() {
+    for (const [sessionKey, timer] of this._runtimePressureTimers) {
+      const sessionPath = this._sessionPathForEntry(timer, sessionKey) || sessionKey;
+      this._clearRuntimePressureTimer(sessionPath);
+    }
+    // abort all streaming sessions + teardownEnglish only disposeAll English only
+    for (const [sessionKey, entry] of this._sessions) {
+      const sessionPath = this._sessionPathForEntry(entry, sessionKey);
+      if (entry.session.isStreaming) {
+        this._forceReleaseStreamingSession(entry, sessionPath, "close_all");
+      } else {
+        await this._teardownSessionEntry(entry, sessionPath, "close_all");
+      }
+      // closeAll English only sidecarEnglish only sessionEnglish onlypending confirmation English only abortEnglish only
+      // DeferredResultCoordinator English only sessionPath English only this._sessions English only _sessionRuntimeKeyForPath sessionId English onlycloseAll English only runtimeEnglish only pendingEnglish only
+      this._d.getConfirmStore?.()?.abortBySession(sessionPath);
+    }
+    try {
+      this._d.closeAllTerminals?.();
+    } catch (err) {
+      log.warn(`closeAllSessions: close terminals failed: ${err.message}`);
+    }
+    this._sessions.clear();
+    this._hibernatedSessionMeta.clear();
+    this._session = null;
+    this._currentSessionPath = null;
+  }
+
+  async cleanupSession() {
+    await this.closeAllSessions();
+    log.log("sessions cleaned up");
+  }
+
+  /**
+   * Provider English only active session English only ModelRegistry English only
+   * English only model English only
+   *
+   * English onlyPi SDK English only baseUrl English only model English onlysession English only
+   * English onlyMiko English only ModelRegistry.refresh() English only
+   * English only session English only——English only turn English only baseUrl English only
+   * English only engine.onProviderChanged() English only
+   */
+  refreshAllSessionsModels() {
+    for (const [sessionKey, entry] of this._sessions) {
+      const sessionPath = this._sessionPathForEntry(entry, sessionKey);
+      try {
+        this._assertSessionModelAvailable(entry.session);
+        this._renewCachePrefixContract(sessionPath, entry, "provider_refresh");
+      } catch (err) {
+        log.warn(`refreshAllSessionsModels: ${err.message}`);
+      }
+    }
+  }
+
+  // ── Session English only ──
+
+  getSessionByPath(sessionPath: any) {
+    return this._getSessionEntryByPath(sessionPath)?.session ?? null;
+  }
+
+  getSessionContextUsage(sessionPath: any) {
+    if (!sessionPath) return null;
+    const live = this._getSessionEntryByPath(sessionPath)?.session?.getContextUsage?.();
+    if (live) return live;
+    return this._getRuntimeValueForPath(this._hibernatedSessionMeta, sessionPath)?.contextUsage || null;
+  }
+
+  renderSessionReminderBlock(sessionPath: any) {
+    if (!sessionPath || !this._envChangeLedger) return null;
+    const entry = this._getSessionEntryByPath(sessionPath);
+    if (!entry) return null;
+    const recipientAgentId = typeof entry.agentId === "string" && entry.agentId.trim()
+      ? entry.agentId.trim()
+      : this.resolveSessionOwnership(sessionPath).agentId;
+    if (!recipientAgentId) {
+      throw new Error("renderSessionReminderBlock: session Agent ownership is unavailable");
+    }
+    return collectReminderBlock({
+      sessionEntry: entry,
+      ledger: this._envChangeLedger,
+      recipientAgentId,
+      now: Date.now(),
+      isZh: getLocale().startsWith("zh"),
+      timeZone: this._d.getPrefs?.()?.getTimezone?.(),
+      unavailableToolNames: this._computeReminderUnavailableToolNamesForEntry(entry, sessionPath),
+    });
+  }
+
+  consumeRenderedSessionReminderBlock(sessionPath: any, receipt: any) {
+    if (!sessionPath || !this._envChangeLedger || !receipt) return false;
+    const entry = this._getSessionEntryByPath(sessionPath);
+    if (!entry) return false;
+    applyReminderConsumption({ sessionEntry: entry, receipt });
+    return true;
+  }
+
+  consumeSessionReminderBlock(sessionPath: any) {
+    const rendered = this.renderSessionReminderBlock(sessionPath);
+    if (!rendered) return null;
+    this.consumeRenderedSessionReminderBlock(sessionPath, rendered.receipt);
+    return rendered.block;
+  }
+
+  noteSessionTimeObserved(sessionPath: any, observedAt: any) {
+    if (!sessionPath) return false;
+    const entry = this._getSessionEntryByPath(sessionPath);
+    if (!entry) return false;
+    noteTimeObservedForSession(entry, observedAt);
+    return true;
+  }
+
+  preflightSessionInput(sessionPath: any) {
+    if (!sessionPath) throw new Error("preflightSessionInput: sessionPath is required");
+    const entry = this._getSessionEntryByPath(sessionPath);
+    if (!entry?.session) {
+      throw new Error(`preflightSessionInput: session not loaded for ${sessionPath}`);
+    }
+    return this._assertCachePrefixContract(sessionPath, entry, {
+      allowRenew: false,
+      countRequest: false,
+    });
+  }
+
+  _assertActiveDesktopSessionPath(sessionPath: any, operation: any) {
+    if (!isActiveSessionPath(sessionPath, this._d.agentsDir)) {
+      throw new Error(`${operation}: path must be an active desktop session under agents/{id}/sessions/*.jsonl; got ${sessionPath}`);
+    }
+  }
+
+  /**
+   * Session English onlymanifest.ownerAgentId English only
+   * English only manifestEnglish only
+   * English only noneEnglish only/English only/English only
+   * English only
+   * English onlystore English only + warn + English only
+   * English only listSessions English only
+   * @returns {{ agentId: string|null, source: "manifest"|"path"|"none", agentDeleted: boolean }}
+   */
+  resolveSessionOwnership(ref: any) {
+    const normalized = this._normalizeSessionRef(ref);
+    let manifest = null;
+    if (normalized.sessionId) {
+      try {
+        manifest = this._resolveSessionManifestForId(normalized.sessionId);
+      } catch (err) {
+        log.warn(`resolveSessionOwnership: manifest lookup failed for ${normalized.sessionId}: ${err?.message || err}`);
+      }
+    } else if (normalized.sessionPath) {
+      manifest = this._resolveSessionManifestForPathQuiet(normalized.sessionPath);
+    }
+    if (manifest?.ownerAgentId) {
+      return {
+        agentId: manifest.ownerAgentId,
+        source: "manifest",
+        agentDeleted: this._d.isAgentDeleted?.(manifest.ownerAgentId) === true,
+      };
+    }
+    const sessionPath = normalized.sessionPath || manifest?.currentLocator?.path || null;
+    const pathAgentId = sessionPath ? this._d.agentIdFromSessionPath?.(sessionPath) || null : null;
+    if (pathAgentId) {
+      return {
+        agentId: pathAgentId,
+        source: "path",
+        agentDeleted: this._d.isAgentDeleted?.(pathAgentId) === true,
+      };
+    }
+    return { agentId: null, source: "none", agentDeleted: false };
+  }
+
+  _isDeletedAgentSessionPath(sessionPath: any) {
+    return this.resolveSessionOwnership(sessionPath).agentDeleted;
+  }
+
+  isRunnableSessionPath(sessionPath: any) {
+    if (!isActiveSessionPath(sessionPath, this._d.agentsDir)) return false;
+    if (this._isDeletedAgentSessionPath(sessionPath)) return false;
+    if (!this._isCurrentActiveSessionLocator(sessionPath)) return false;
+    if (
+      this._getSessionEntryByPath(sessionPath)
+      || this._getRuntimeValueForPath(this._hibernatedSessionMeta, sessionPath)
+    ) return true;
+    try {
+      return fs.existsSync(sessionPath);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * #1624English only"English only"English only dismiss
+   * English onlydismissed fingerprint === English only live fingerprintEnglish only nullEnglish only
+   * English only restore English only sessionEntry English only dismiss English only
+   */
+  getSessionCapabilityDriftNotice(sessionPath: any) {
+    const entry = this._getSessionEntryByPath(sessionPath);
+    const drift = entry?.capabilityDrift;
+    if (!drift?.hasDrift) return null;
+    if (entry.capabilityDriftDismissedFingerprint === drift.fingerprint) return null;
+    return {
+      ...drift,
+      addedToolNames: [...drift.addedToolNames],
+      removedToolNames: [...drift.removedToolNames],
+      invalidToolNames: [...drift.invalidToolNames],
+    };
+  }
+
+  _buildLiveToolAvailabilityInputForEntry(
+    entry: any,
+    sessionPath: any,
+    { allowGlobalModelFallback = true }: any = {},
+  ) {
+    const entryAgentId = typeof entry?.agentId === "string" ? entry.agentId.trim() : "";
+    const ownerAgentId = entryAgentId || this.resolveSessionOwnership(sessionPath).agentId || "";
+    if (!ownerAgentId) return null;
+    const focusedAgent = this._d.getAgent?.();
+    const agent = this._d.getAgentById?.(ownerAgentId)
+      || (focusedAgent?.id === ownerAgentId ? focusedAgent : null);
+    if (!agent) return null;
+    const cwd = entry?.cwd || entry?.session?.sessionManager?.getCwd?.() || this._d.getHomeCwd?.(agent.id) || process.cwd();
+    const models = this._d.getModels?.() || {};
+    const model = entry?.session?.model
+      || (entry?.modelId && entry?.modelProvider && Array.isArray(models.availableModels)
+        ? findModel(models.availableModels, entry.modelId, entry.modelProvider)
+        : null)
+      || (allowGlobalModelFallback ? models.currentModel : null)
+      || null;
+    const toolSnapshotOptions: any = {
+      forceMemoryEnabled: entry?.memoryEnabled !== false,
+      model,
+    };
+    if (typeof agent.experienceEnabled === "boolean") {
+      toolSnapshotOptions.forceExperienceEnabled = entry?.experienceEnabled === true;
+    }
+    const agentToolsSnapshot = typeof agent.getToolsSnapshot === "function"
+      ? agent.getToolsSnapshot(toolSnapshotOptions)
+      : agent.tools;
+    const workspaceScope = normalizeWorkspaceScope({
+      primaryCwd: cwd,
+      workspaceFolders: Array.isArray(entry?.workspaceFolders) ? entry.workspaceFolders : [],
+    });
+    const folderScope = normalizeSessionFolderScope({
+      primaryCwd: cwd,
+      workspaceFolders: workspaceScope.workspaceFolders,
+      authorizedFolders: Array.isArray(entry?.authorizedFolders) ? entry.authorizedFolders : [],
+    });
+    const built = this._d.buildTools?.(cwd, agentToolsSnapshot, {
+      workspace: cwd,
+      workspaceFolders: workspaceScope.workspaceFolders,
+      authorizedFolders: folderScope.authorizedFolders,
+      getAuthorizedFolders: () => this.getSessionAuthorizedFolders(sessionPath),
+      agentDir: agent.agentDir,
+    }) || { tools: [], customTools: [] };
+    const allToolObjects = [
+      ...(built.tools || []),
+      ...(built.customTools || []),
+    ];
+    const channelsEnabled = this._d.getPrefs?.()?.getChannelsEnabled?.();
+    return {
+      agent,
+      allToolObjects,
+      context: { agentId: ownerAgentId, restore: false, channelsEnabled },
+    };
+  }
+
+  _computeLiveToolSnapshotForEntry(entry: any, sessionPath: any) {
+    const input = this._buildLiveToolAvailabilityInputForEntry(entry, sessionPath);
+    if (!input) return null;
+    const { agent, allToolObjects, context } = input;
+    const allToolNames = toolNamesFromObjects(allToolObjects);
+    const extraDisabledToolNames = [
+      ...getStableFeatureDisabledToolNames(context),
+      ...computeRuntimeDisabledToolNames(
+        allToolObjects,
+        agent.config,
+        context,
+        { warn: (msg) => log.warn(msg) },
+      ),
+    ];
+    const disabled = agent.config?.tools?.disabled ?? DEFAULT_DISABLED_TOOL_NAMES;
+    return computeToolSnapshot(allToolNames, disabled, {
+      extraDisabled: extraDisabledToolNames,
+    });
+  }
+
+  _computeReminderUnavailableToolNamesForEntry(entry: any, sessionPath: any) {
+    const frozenToolNames = uniqueToolNames(Array.isArray(entry?.toolNames) ? entry.toolNames : []);
+    if (frozenToolNames.length === 0) return [];
+    let input;
+    try {
+      input = this._buildLiveToolAvailabilityInputForEntry(entry, sessionPath, {
+        allowGlobalModelFallback: false,
+      });
+    } catch (err) {
+      log.warn(`Reminder live tool inventory failed for ${path.basename(sessionPath || "unknown session")}: ${(err as any)?.message || err}`);
+      return [];
+    }
+    if (!input) {
+      log.warn(`Reminder live tool inventory unavailable for ${path.basename(sessionPath || "unknown session")}`);
+      return [];
+    }
+    let live;
+    try {
+      live = computeReminderLiveToolAvailability(
+        input.allToolObjects,
+        input.agent.config,
+        input.context,
+        { warn: (msg) => log.warn(msg) },
+      );
+    } catch (err) {
+      log.warn(`Reminder live tool availability failed for ${path.basename(sessionPath || "unknown session")}: ${(err as any)?.message || err}`);
+      return [];
+    }
+    const liveToolNames = new Set(live.availableToolNames);
+    return frozenToolNames
+      .filter((name) => !liveToolNames.has(name))
+      .sort((left, right) => left.localeCompare(right));
+  }
+
+  markCapabilitySnapshotsStale({ agentId = null, reason = "capability_changed" }: any = {}) {
+    const targetAgentId = typeof agentId === "string" && agentId ? agentId : null;
+    let scanned = 0;
+    let marked = 0;
+    for (const entry of this._sessions.values()) {
+      if (!entry?.sessionPath || !entry?.session) continue;
+      if (targetAgentId && entry.agentId !== targetAgentId) continue;
+      scanned += 1;
+      const frozenToolNames = Array.isArray(entry.runtimeToolNames)
+        ? entry.runtimeToolNames
+        : (entry.activeToolDefinitions || []).map((tool) => tool?.name).filter(Boolean);
+      const liveToolNames = this._computeLiveToolSnapshotForEntry(entry, entry.sessionPath);
+      if (!liveToolNames) continue;
+      const liveToolNameSet = new Set(liveToolNames);
+      const drift = buildSessionCapabilityDrift({
+        frozenToolNames,
+        liveToolNames,
+        invalidToolNames: Array.isArray(entry.unavailableToolNames)
+          ? entry.unavailableToolNames.filter((name) => !liveToolNameSet.has(name))
+          : [],
+        frozenSystemPrompt: "",
+        liveSystemPrompt: "",
+      });
+      entry.capabilityDrift = drift.hasDrift ? { ...drift, reason } : null;
+      if (drift.hasDrift) {
+        marked += 1;
+        this._emitSessionMetadataUpdated(entry.sessionPath, {
+          capabilityDrift: this.getSessionCapabilityDriftNotice(entry.sessionPath),
+        });
+      } else {
+        this._emitSessionMetadataUpdated(entry.sessionPath, { capabilityDrift: null });
+      }
+    }
+    return { ok: true, scanned, marked };
+  }
+
+  /**
+   * #1624English only"English only fingerprint English only"English only session-meta
+   * English only session English only
+   */
+  async dismissSessionCapabilityDrift(sessionPath: any, fingerprint: any) {
+    this._assertActiveDesktopSessionPath(sessionPath, "dismissSessionCapabilityDrift");
+    if (typeof fingerprint !== "string" || !fingerprint) {
+      throw new Error("dismissSessionCapabilityDrift: fingerprint required");
+    }
+    const entry = this._getSessionEntryByPath(sessionPath);
+    if (entry) entry.capabilityDriftDismissedFingerprint = fingerprint;
+    await this.writeSessionMeta(sessionPath, { capabilityDriftDismissedFingerprint: fingerprint });
+    return { ok: true };
+  }
+
+  async reloadSessionRuntime(sessionPath: any, { refreshCapabilitySnapshots = false }: any = {}) {
+    this._assertActiveDesktopSessionPath(sessionPath, "reloadSessionRuntime");
+    if (this._isDeletedAgentSessionPath(sessionPath)) {
+      throw new Error("reloadSessionRuntime: session belongs to a deleted agent");
+    }
+    this._assertCurrentActiveSessionLocator(sessionPath, "reloadSessionRuntime");
+    const targetAgentId = this.resolveSessionOwnership(sessionPath).agentId;
+    if (!targetAgentId) {
+      throw new Error(`reloadSessionRuntime: cannot resolve agentId for ${sessionPath}`);
+    }
+    const agent = this._d.getAgentById(targetAgentId);
+    if (!agent) {
+      throw new Error(`reloadSessionRuntime: agent "${targetAgentId}" not found`);
+    }
+
+    const oldEntry = this._getSessionEntryByPath(sessionPath);
+    const hibernatedEntry = this._getRuntimeValueForPath(this._hibernatedSessionMeta, sessionPath);
+    const reminderState = oldEntry || hibernatedEntry || null;
+    if (oldEntry) {
+      if (oldEntry.session?.isStreaming || oldEntry.session?.isCompacting || oldEntry._switching) {
+        throw new Error("reloadSessionRuntime: session is busy");
+      }
+      await this._teardownSessionEntry(oldEntry, sessionPath, "reload");
+      this._deleteRuntimeValueForPath(this._sessions, sessionPath);
+    }
+    this._deleteRuntimeValueForPath(this._hibernatedSessionMeta, sessionPath);
+
+    const memoryEnabled = typeof oldEntry?.memoryEnabled === "boolean"
+      ? oldEntry.memoryEnabled
+      : this.getSessionMemoryEnabled(sessionPath);
+
+    this._emitSessionHealthWarning(sessionPath);
+    // #1285: English only open English only toolResultEnglish only SessionManager.openEnglish only
+    this._repairOrphanToolHistory(sessionPath);
+    this._repairInlineMediaHistory(sessionPath);
+    const sessionMgr = SessionManager.open(sessionPath, agent.sessionDir);
+    const cwd = sessionMgr.getCwd?.() || undefined;
+    const result = await this.createSession(sessionMgr, cwd, memoryEnabled, null, {
+      restore: true,
+      agent,
+      agentId: targetAgentId,
+      preserveAgentMemoryState: true,
+      refreshCapabilitySnapshots,
+      reminderState,
+    });
+    return result.session;
+  }
+
+  /**
+   * English only sessionPath English only _sessions cacheEnglish only**English only this._sessionEnglish onlyUI English only**English only
+   *
+   * English only /rc English onlybridge English only session English only session English only
+   * UI English only cache English onlyswitchSession English only + flush English only sessionEnglish only
+   * English only createSession English only cold-load English only this._session English only
+   * English only UI English only
+   *
+   * English only lastTouchedAtEnglish only
+   *
+   * @param {string} sessionPath
+   * @returns {Promise<object>} AgentSession English only
+   */
+  async ensureSessionLoaded(sessionPath: any) {
+    this._assertActiveDesktopSessionPath(sessionPath, "ensureSessionLoaded");
+    if (this._isDeletedAgentSessionPath(sessionPath)) {
+      throw new Error("ensureSessionLoaded: session belongs to a deleted agent");
+    }
+    this._assertCurrentActiveSessionLocator(sessionPath, "ensureSessionLoaded");
+    const existing = this._getSessionEntryByPath(sessionPath);
+    if (existing) {
+      existing.lastTouchedAt = Date.now();
+      return existing.session;
+    }
+
+    const targetAgentId = this.resolveSessionOwnership(sessionPath).agentId;
+    if (!targetAgentId) {
+      throw new Error(`ensureSessionLoaded: cannot resolve agentId for ${sessionPath}`);
+    }
+    const agent = this._d.getAgentById(targetAgentId);
+    if (!agent) {
+      throw new Error(`ensureSessionLoaded: agent "${targetAgentId}" not found`);
+    }
+
+    // memoryEnabled English only session-owned state English only switchSession English only
+    const memoryEnabled = this.getSessionMemoryEnabled(sessionPath);
+    const reminderState = this._getRuntimeValueForPath(this._hibernatedSessionMeta, sessionPath);
+
+    // English onlycreateSession English only this._session / _sessionStartedEnglish only
+    // /rc English only attach English only UI English only
+    const prevFocus = this._session;
+    const prevCurrentSessionPath = this._currentSessionPath;
+    const prevSessionStarted = this._sessionStarted;
+    try {
+      // #521: attach English only bridge / RC English only
+      this._emitSessionHealthWarning(sessionPath);
+      this._repairOversizedSessionHistory(sessionPath);
+      // #1285: English only open English only toolResultEnglish only SessionManager.openEnglish only
+      this._repairOrphanToolHistory(sessionPath);
+      this._repairInlineMediaHistory(sessionPath);
+      const sessionMgr = SessionManager.open(sessionPath, agent.sessionDir);
+      const cwd = sessionMgr.getCwd?.() || undefined;
+      await this.createSession(sessionMgr, cwd, memoryEnabled, null, {
+        restore: true,
+        agent,
+        agentId: targetAgentId,
+        preserveAgentMemoryState: true,
+        reminderState,
+      });
+    } finally {
+      this._session = prevFocus;
+      this._currentSessionPath = prevCurrentSessionPath;
+      this._sessionStarted = prevSessionStarted;
+    }
+
+    const entry = this._getSessionEntryByPath(sessionPath);
+    if (!entry) throw new Error(`ensureSessionLoaded: session not in cache after createSession`);
+    if (entry.agentId !== targetAgentId) {
+      throw new Error(`ensureSessionLoaded: restored agentId mismatch (${entry.agentId} !== ${targetAgentId})`);
+    }
+    return entry.session;
+  }
+
+  isSessionStreaming(sessionPath: any) {
+    return this._hasRuntimeValueForPath(this._prePromptAbortControllers, sessionPath)
+      || !!this.getSessionByPath(sessionPath)?.isStreaming;
+  }
+
+  isSessionSwitching(sessionPath: any) {
+    return !!this._getSessionEntryByPath(sessionPath)?._switching;
+  }
+
+  async abortSessionByPath(sessionPath: any, options: any = {}) {
+    return this.abortSession(sessionPath, options);
+  }
+
+  async listSessions(options: any = {}) {
+    const activeAgents = this._d.listAgents({
+      includePluginPrivate: options.includePluginPrivate === true,
+      ...(options.ownerPluginId ? { ownerPluginId: options.ownerPluginId } : {}),
+    });
+    const deletedAgents = this._d.listDeletedAgents?.() || [];
+    const agents = [
+      ...activeAgents.map(agent => ({ ...agent, agentDeleted: false })),
+      ...deletedAgents.map(agent => ({ ...agent, agentDeleted: true })),
+    ];
+
+    // English only agentEnglish only I/O English only
+    const perAgent = await Promise.all(agents.map(async (agent) => {
+      const sessionDir = path.join(this._d.agentsDir, agent.id, "sessions");
+      try { await fsp.access(sessionDir); } catch { return []; }
+      try {
+        const [sessions, titles, meta] = await Promise.all([
+          this._sessionListProjectionCache.list(sessionDir),
+          this._loadSessionTitlesFor(sessionDir),
+          this._readMetaCached(path.join(sessionDir, "session-meta.json")),
+        ]);
+        const visibleSessions = [];
+        for (const s of sessions) {
+          const title = this._sessionTitleFromMap(titles, s.path);
+          if (title) s.title = title;
+          s.agentId = agent.id;
+          s.agentName = agent.name;
+          if (agent.agentDeleted) {
+            s.agentDeleted = true;
+            s.readOnlyReason = "agent_deleted";
+            s.continuationAvailable = true;
+            s.deletedAt = agent.deletedAt || null;
+          }
+          const sessKey = path.basename(s.path);
+          const metaEntry = meta[sessKey];
+          const manifest = this._resolveSessionManifestForPathQuiet(s.path);
+          if (manifest && (
+            manifest.lifecycle !== "active"
+            || manifest.domain !== "desktop"
+            || !manifest.currentLocator?.path
+            || path.resolve(manifest.currentLocator.path) !== path.resolve(s.path)
+          )) {
+            continue;
+          }
+          const runtimeEntry = this._sessionFolderEntry(s.path);
+          if (hasSessionPermissionModeFields(runtimeEntry)) {
+            s.permissionMode = normalizeSessionPermissionMode(runtimeEntry);
+          } else if (hasSessionPermissionModeFields(metaEntry)) {
+            s.permissionMode = normalizeSessionPermissionMode(metaEntry);
+          } else if (manifest?.permissionModeSnapshot?.mode) {
+            s.permissionMode = normalizeSessionPermissionMode(manifest.permissionModeSnapshot.mode);
+          }
+          s.pinnedAt = typeof manifest?.pinnedAt === "string"
+            ? manifest.pinnedAt
+            : (typeof metaEntry?.pinnedAt === "string" ? metaEntry.pinnedAt : null);
+          s.projectId = typeof metaEntry?.projectId === "string" && metaEntry.projectId.trim()
+            ? metaEntry.projectId.trim()
+            : null;
+          const workspaceMount = normalizeSessionWorkspaceMount(metaEntry);
+          s.workspaceMountId = workspaceMount?.mountId || null;
+          s.workspaceLabel = workspaceMount?.label || null;
+          const runtimePluginMeta = normalizePluginSessionMeta({
+            ownerPluginId: runtimeEntry?.ownerPluginId,
+            sessionKind: runtimeEntry?.sessionKind,
+            sessionVisibility: runtimeEntry?.sessionVisibility,
+          });
+          const manifestPluginMeta = manifest?.plugin && typeof manifest.plugin === "object"
+            ? manifest.plugin
+            : null;
+          const legacyPluginMeta = metaEntry?.plugin && typeof metaEntry.plugin === "object"
+            ? metaEntry.plugin
+            : null;
+          const pluginMeta = runtimePluginMeta || manifestPluginMeta || legacyPluginMeta;
+          s.ownerPluginId = typeof pluginMeta?.ownerPluginId === "string" ? pluginMeta.ownerPluginId : null;
+          s.sessionKind = typeof pluginMeta?.kind === "string" ? pluginMeta.kind : null;
+          s.visibility = typeof pluginMeta?.visibility === "string" ? pluginMeta.visibility : "public";
+          // English only model:{id,provider}English only modelIdEnglish only providerEnglish only
+          // English only modelProvider English only nullEnglish only
+          if (metaEntry?.model && typeof metaEntry.model === "object") {
+            s.modelId = metaEntry.model.id || null;
+            s.modelProvider = metaEntry.model.provider || null;
+          } else {
+            s.modelId = metaEntry?.modelId || null;
+            s.modelProvider = null;
+          }
+          if (!sessionMatchesListOptions(s, options)) continue;
+          s.sessionId = manifest?.sessionId || this._sessionIdForPath(s.path);
+          visibleSessions.push(s);
+        }
+        return visibleSessions;
+      } catch (err) {
+        // English only (#414)
+        log.warn(`listSessions: agent="${agent.id}" sessionDir="${sessionDir}" failed: ${err?.message || err}`);
+        return [];
+      }
+    }));
+    const allSessions = perAgent.flat();
+
+    const currentPath = this.currentSessionPath;
+    const projectedPaths = new Set(allSessions.map((s) => s.path));
+    for (const [sessionKey, entry] of this._sessions) {
+      const sessionPath = this._sessionPathForEntry(entry, sessionKey);
+      if (projectedPaths.has(sessionPath)) continue;
+      if (!isActiveSessionPath(sessionPath, this._d.agentsDir)) continue;
+      const shouldExpose =
+        entry.visibleInSessionList === true
+        || entry.session?.isStreaming === true
+        || this._hasRuntimeValueForPath(this._prePromptAbortControllers, sessionPath)
+        || (sessionPath === currentPath && this._sessionStarted);
+      if (!shouldExpose) continue;
+
+      const deletedInfo = this._d.getDeletedAgentInfo?.(entry.agentId);
+      const isDeleted = !!deletedInfo || this._d.isAgentDeleted?.(entry.agentId);
+      const agent = isDeleted ? deletedInfo : (this._d.getAgentById?.(entry.agentId) || this._d.getAgent());
+      const projected = {
+        path: sessionPath,
+        title: null,
+        firstMessage: "",
+        modified: new Date(entry.lastTouchedAt || Date.now()),
+        // English onlyrevision=null English only
+        // English only reconcile English only null English only
+        revision: null,
+        messageCount: 0,
+        cwd: entry.session?.sessionManager?.getCwd?.() || "",
+        agentId: entry.agentId || this._d.getActiveAgentId(),
+        agentName: agent?.agentName || agent?.name || entry.agentId || null,
+        modelId: entry.modelId || null,
+        modelProvider: entry.modelProvider || null,
+        ownerPluginId: entry.ownerPluginId || null,
+        sessionKind: entry.sessionKind || null,
+        visibility: entry.sessionVisibility || "public",
+        workspaceMountId: entry.workspaceMountId || null,
+        workspaceLabel: entry.workspaceLabel || null,
+        sessionId: entry.sessionId || this._sessionIdForPath(sessionPath),
+        pinnedAt: null,
+        projectId: null,
+        ...(isDeleted ? {
+          agentDeleted: true,
+          readOnlyReason: "agent_deleted",
+          continuationAvailable: true,
+          deletedAt: deletedInfo?.deletedAt || null,
+        } : {}),
+      };
+      if (!sessionMatchesListOptions(projected, options)) continue;
+      allSessions.push(projected);
+      projectedPaths.add(sessionPath);
+    }
+
+    allSessions.sort((a, b) => b.modified - a.modified);
+    return allSessions;
+  }
+
+  async saveSessionTitle(sessionPath: any, title: any) {
+    const agentId = this._d.agentIdFromSessionPath(sessionPath);
+    const sessionDir = agentId
+      ? path.join(this._d.agentsDir, agentId, "sessions")
+      : this._d.getAgent().sessionDir;
+    const titlePath = path.join(sessionDir, "session-titles.json");
+    const titles = await this._loadSessionTitlesFor(sessionDir);
+    const titleKey = this._sessionTitleKeyForPath(sessionPath);
+    if (titleKey !== sessionPath) {
+      delete titles[sessionPath];
+      delete titles[path.basename(sessionPath)];
+    }
+    titles[titleKey] = title;
+    await fsp.writeFile(titlePath, JSON.stringify(titles, null, 2), "utf-8");
+    // English only
+    this._titlesCache.set(sessionDir, { titles: { ...titles }, ts: Date.now() });
+  }
+
+  async setSessionPinned(sessionRef: any, pinned: any) {
+    const { sessionId, sessionPath, manifest } = this._resolveSessionWriteRef(sessionRef, "setSessionPinned");
+    const pinnedAt = pinned ? new Date().toISOString() : null;
+    await this.writeSessionMeta(sessionPath, { pinnedAt });
+    if (manifest || sessionId) {
+      this._sessionManifestStore.setPinnedAt((manifest?.sessionId || sessionId), pinnedAt);
+    }
+    await this._verifySessionPinnedState(sessionPath, pinnedAt);
+    this._emitSessionMetadataUpdated(sessionPath, { pinnedAt });
+    return pinnedAt;
+  }
+
+  async setSessionPluginMeta(sessionPath: any, patch: any = {}) {
+    if (!sessionPath) throw new Error("sessionPath is required");
+    const entry = this._getSessionEntryByPath(sessionPath) || null;
+    const manifest = this._resolveSessionManifestForPath(sessionPath);
+    let current: any = {
+      ownerPluginId: manifest?.plugin?.ownerPluginId || entry?.ownerPluginId || null,
+      kind: manifest?.plugin?.kind || entry?.sessionKind || null,
+      visibility: manifest?.plugin?.visibility || entry?.sessionVisibility || "public",
+    };
+    try {
+      const metaPath = this._sessionMetaPathFor(sessionPath);
+      const meta = await this._readMetaCached(metaPath);
+      const metaEntry = meta[path.basename(sessionPath)];
+      if (metaEntry?.plugin && typeof metaEntry.plugin === "object") {
+        current = {
+          ownerPluginId: metaEntry.plugin.ownerPluginId || current.ownerPluginId || null,
+          kind: metaEntry.plugin.kind || current.kind || null,
+          visibility: metaEntry.plugin.visibility || current.visibility || "public",
+        };
+      }
+    } catch (err) {
+      if (err.code !== "ENOENT") {
+        log.warn(`setSessionPluginMeta: meta read failed for ${path.basename(sessionPath)}: ${err.message}`);
+      }
+    }
+    const plugin = normalizePluginSessionMeta({
+      ownerPluginId: patch.ownerPluginId ?? current.ownerPluginId,
+      sessionKind: patch.kind ?? patch.sessionKind ?? current.kind,
+      sessionVisibility: patch.visibility ?? patch.sessionVisibility ?? current.visibility,
+    }) || { ownerPluginId: null, kind: null, visibility: "public" };
+    await this.writeSessionMeta(sessionPath, { plugin });
+    if (manifest) {
+      this._sessionManifestStore.setPlugin(manifest.sessionId, plugin);
+    }
+    if (entry) {
+      entry.ownerPluginId = plugin.ownerPluginId || null;
+      entry.sessionKind = plugin.kind || null;
+      entry.sessionVisibility = plugin.visibility || "public";
+    }
+    this._emitSessionMetadataUpdated(sessionPath, { plugin });
+    return plugin;
+  }
+
+  async _verifySessionPinnedState(sessionPath: any, expectedPinnedAt: any) {
+    const metaPath = this._sessionMetaPathFor(sessionPath);
+    const sessKey = path.basename(sessionPath);
+    let meta = {};
+    try {
+      meta = await this._readMetaCached(metaPath);
+    } catch (err) {
+      if (expectedPinnedAt === null && err.code === "ENOENT") return;
+      throw new Error(`setSessionPinned: verify failed for ${sessKey}: ${err.message}`);
+    }
+    const actual = meta[sessKey]?.pinnedAt ?? null;
+    if (actual !== expectedPinnedAt) {
+      throw new Error(`setSessionPinned: expected pinnedAt=${expectedPinnedAt ?? "null"} for ${sessKey}, got ${actual ?? "null"}`);
+    }
+  }
+
+  /**
+   * English only session English only session-titles.json English only
+   * English only / cleanup English only titles.json English only
+   * English only key English only no-opEnglish only
+   */
+  async clearSessionTitle(sessionPath: any) {
+    const agentId = this._d.agentIdFromSessionPath(sessionPath);
+    const sessionDir = agentId
+      ? path.join(this._d.agentsDir, agentId, "sessions")
+      : this._d.getAgent().sessionDir;
+    const titlePath = path.join(sessionDir, "session-titles.json");
+    let raw;
+    try {
+      raw = await fsp.readFile(titlePath, "utf-8");
+    } catch {
+      return; // titles.json English only
+    }
+    let titles;
+    try { titles = JSON.parse(raw); } catch { return; }
+    const keys = [
+      this._sessionTitleKeyForPath(sessionPath),
+      sessionPath,
+      path.basename(sessionPath),
+    ].filter(Boolean);
+    let changed = false;
+    for (const key of [...new Set(keys)]) {
+      if (Object.prototype.hasOwnProperty.call(titles, key)) {
+        delete titles[key];
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    await fsp.writeFile(titlePath, JSON.stringify(titles, null, 2), "utf-8");
+    this._titlesCache.set(sessionDir, { titles: { ...titles }, ts: Date.now() });
+  }
+
+  /**
+   * English only agent English only sessionEnglish only`<agentDir>/sessions/archived/*.jsonl`English only
+   * title English only key English only——English only archived English only titles.jsonEnglish only
+   */
+  async listArchivedSessions() {
+    const activeAgents = this._d.listAgents();
+    const deletedAgents = this._d.listDeletedAgents?.() || [];
+    const agents = [
+      ...activeAgents.map(agent => ({ ...agent, agentDeleted: false })),
+      ...deletedAgents.map(agent => ({ ...agent, agentDeleted: true })),
+    ];
+    const perAgent = await Promise.all(agents.map(async (agent) => {
+      const sessionDir = path.join(this._d.agentsDir, agent.id, "sessions");
+      const archDir = path.join(sessionDir, "archived");
+      let files;
+      try { files = await fsp.readdir(archDir); } catch { return []; }
+      const titles = await this._loadSessionTitlesFor(sessionDir).catch(() => ({}));
+      const rows = await Promise.all(files
+        .filter(isSessionJsonlFilename)
+        .map(async (f) => {
+          const full = path.join(archDir, f);
+          try {
+            const stat = await fsp.stat(full);
+            const activeKey = path.join(sessionDir, f);
+            const archivedManifest = this._resolveSessionManifestForPath(full);
+            const activeManifest = archivedManifest ? null : this._resolveSessionManifestForPath(activeKey);
+            const manifest = archivedManifest
+              || (activeManifest?.sessionId && this._sessionManifestStore?.updateLocatorLifecycle
+                ? this._sessionManifestStore.updateLocatorLifecycle(
+                  activeManifest.sessionId,
+                  full,
+                  "archived",
+                  "archived_session_list_repair",
+                )
+                : null)
+              || this._ensureSessionManifestForPath(full, {
+                ownerAgentId: agent.id,
+                domain: "desktop",
+                kind: "chat",
+                lifecycle: "archived",
+                provenance: { createdBy: "archived_session_list_repair" },
+                locatorReason: "archived_session_list",
+              });
+            return {
+              path: full,
+              sessionId: manifest?.sessionId || null,
+              title: this._sessionTitleFromMap(titles, full, [activeKey]) || null,
+              archivedAt: stat.mtime.toISOString(),
+              sizeBytes: stat.size,
+              agentId: agent.id,
+              agentName: agent.name,
+              agentDeleted: agent.agentDeleted === true,
+              readOnlyReason: agent.agentDeleted === true ? "agent_deleted" : null,
+              deletedAt: agent.deletedAt || null,
+            };
+          } catch {
+            return null;
+          }
+        }));
+      return rows.filter(Boolean);
+    }));
+    const all = perAgent.flat();
+    all.sort((a, b) => new Date(b.archivedAt).getTime() - new Date(a.archivedAt).getTime());
+    return all;
+  }
+
+  async getTitlesForPaths(paths: any[]) {
+    const titles = {};
+    for (const p of paths) titles[p] = null;
+
+    const byDir = new Map();
+    for (const p of paths) {
+      const dir = path.dirname(p);
+      if (!byDir.has(dir)) byDir.set(dir, []);
+      byDir.get(dir).push(p);
+    }
+
+    for (const [dir, sessionPaths] of byDir) {
+      try {
+        const dirTitles = await this._loadSessionTitlesFor(dir);
+        for (const sp of sessionPaths) {
+          const title = this._sessionTitleFromMap(dirTitles, sp);
+          if (title) titles[sp] = title;
+        }
+      } catch {
+        // titles English only session-titles.json English only/English only nullEnglish only
+      }
+    }
+
+    return titles;
+  }
+
+  async _loadSessionTitlesFor(sessionDir: any) {
+    const cached = this._titlesCache.get(sessionDir);
+    if (cached && Date.now() - cached.ts < SessionCoordinator._TITLES_TTL) {
+      return { ...cached.titles };
+    }
+    try {
+      const raw = await fsp.readFile(path.join(sessionDir, "session-titles.json"), "utf-8");
+      const titles = JSON.parse(raw);
+      this._titlesCache.set(sessionDir, { titles, ts: Date.now() });
+      return { ...titles };
+    } catch {
+      this._titlesCache.set(sessionDir, { titles: {}, ts: Date.now() });
+      return {};
+    }
+  }
+
+  /** English only session-meta.jsonEnglish only TTL English only */
+  async _readMetaCached(metaPath: any) {
+    const cached = this._metaCache.get(metaPath);
+    if (cached && Date.now() - cached.ts < SessionCoordinator._TITLES_TTL) {
+      return cached.data;
+    }
+    try {
+      const stat = await fsp.stat(metaPath);
+      if (stat.size > SESSION_META_INDEX_MAX_BYTES) {
+        const compacted = await this._compactOversizedSessionMeta(metaPath);
+        const data = await this._hydrateSessionMetaPayloads(metaPath, compacted);
+        this._metaCache.set(metaPath, { data, ts: Date.now() });
+        return data;
+      }
+      const raw = await fsp.readFile(metaPath, "utf-8");
+      const data = await this._hydrateSessionMetaPayloads(metaPath, JSON.parse(raw));
+      this._metaCache.set(metaPath, { data, ts: Date.now() });
+      return data;
+    } catch {
+      return {};
+    }
+  }
+
+  async _readSessionPromptSnapshot(agent: any, sessionPath: any) {
+    try {
+      const metaPath = path.join(agent.sessionDir, "session-meta.json");
+      const meta = await this._readMetaCached(metaPath);
+      return normalizeSessionPromptSnapshot(meta[path.basename(sessionPath)]?.promptSnapshot);
+    } catch {
+      return null;
+    }
+  }
+
+  _getFinalSystemPrompt(session: any) {
+    if (typeof session?._baseSystemPrompt === "string") {
+      return session._baseSystemPrompt;
+    }
+    if (typeof session?.agent?.state?.systemPrompt === "string") {
+      return session.agent.state.systemPrompt;
+    }
+    return null;
+  }
+
+  _buildCachePrefixContract(entry: any, { model = null, context = null }: any = {}) {
+    const session = entry?.session;
+    const state = session?.agent?.state;
+    const hasContextPrompt = context && Object.prototype.hasOwnProperty.call(context, "systemPrompt");
+    return buildLlmContextCachePrefixContract({
+      model: model || session?.model || state?.model || null,
+      systemPrompt: hasContextPrompt ? context.systemPrompt : (this._getFinalSystemPrompt(session) ?? ""),
+      tools: Array.isArray(context?.tools) ? context.tools : (Array.isArray(state?.tools) ? state.tools : []),
+    });
+  }
+
+  _renewCachePrefixContract(sessionPath: any, entry: any, reason: any, options: any = {}) {
+    if (!entry?.session) return null;
+    const contract = this._buildCachePrefixContract(entry, options);
+    entry.cachePrefixContract = contract;
+    entry.cachePrefixContractRenewReason = reason;
+    entry.cachePrefixContractRenewedAt = Date.now();
+    entry.cachePrefixContractRequestCount = 0;
+
+    if (cacheContractDebugEnabled()) {
+      log.log(`cache_contract_renew ${JSON.stringify({
+        session: sessionPath ? path.basename(sessionPath) : null,
+        reason,
+        contract: summarizeCachePrefixContract(contract),
+      })}`);
+    }
+    return contract;
+  }
+
+  _assertCachePrefixContract(
+    sessionPath: any,
+    entry: any,
+    {
+      model = null,
+      context = null,
+      allowRenew = true,
+      countRequest = true,
+    }: any = {},
+  ) {
+    if (!entry?.session) return null;
+    let expected = entry.cachePrefixContract;
+    if (!expected) {
+      if (!allowRenew) {
+        throw new Error("Cache prefix contract unavailable for input preflight");
+      }
+      expected = this._renewCachePrefixContract(sessionPath, entry, "late_init", { model, context });
+    }
+    const actual = this._buildCachePrefixContract(entry, { model, context });
+    const diffs = diffCachePrefixContracts(expected, actual);
+    if (diffs.length > 0) {
+      const record = {
+        session: sessionPath ? path.basename(sessionPath) : null,
+        renewReason: entry.cachePrefixContractRenewReason || null,
+        requestCount: entry.cachePrefixContractRequestCount || 0,
+        diffs,
+        expected: summarizeCachePrefixContract(expected),
+        actual: summarizeCachePrefixContract(actual),
+      };
+      log.error(`cache_contract_violation ${JSON.stringify(record)}`);
+      try {
+        this._d.emitEvent?.({
+          type: "cache_contract_violation",
+          sessionPath,
+          diffs,
+          expected: summarizeCachePrefixContract(expected),
+          actual: summarizeCachePrefixContract(actual),
+        }, sessionPath);
+      } catch {
+        // The provider request must still fail even if UI event delivery fails.
+      }
+      throw new Error(`Cache prefix contract violated: ${diffs.map((d) => d.field).join(", ")}`);
+    }
+
+    if (countRequest) {
+      entry.cachePrefixContractRequestCount = (entry.cachePrefixContractRequestCount || 0) + 1;
+    }
+    if (cacheContractDebugEnabled()) {
+      log.log(`cache_contract_check ${JSON.stringify({
+        session: sessionPath ? path.basename(sessionPath) : null,
+        requestCount: entry.cachePrefixContractRequestCount || 0,
+        contract: summarizeCachePrefixContract(actual),
+      })}`);
+    }
+    return actual;
+  }
+
+  _installCachePrefixGuard(sessionPath: any, entry: any) {
+    const agent = entry?.session?.agent;
+    if (!agent || typeof agent.streamFn !== "function" || entry.cachePrefixGuardInstalled) return;
+    const originalStreamFn = agent.streamFn;
+    entry.cachePrefixGuardInstalled = true;
+    entry.cachePrefixOriginalStreamFn = originalStreamFn;
+    agent.streamFn = async (model, context, options) => {
+      // The main-session prefix contract applies only to normal turns. Pi native
+      // compaction and branch summaries use their own prompt; cache-preserving
+      // side tasks remain protected by their strict session snapshot contract.
+      if (entry.session?.isCompacting !== true) {
+        this._assertCachePrefixContract(sessionPath, entry, { model, context });
+      }
+      return originalStreamFn.call(agent, model, context, options);
+    };
+  }
+
+  _applyFinalPromptSnapshot(session: any, finalSystemPrompt: any) {
+    if (typeof finalSystemPrompt !== "string") return;
+    try {
+      session._baseSystemPrompt = finalSystemPrompt;
+    } catch {
+      // session English only frozen English only _baseSystemPrompt English only setterEnglish only
+      // English only agent.state.systemPrompt English only
+    }
+    if (session?.agent?.state && typeof session.agent.state === "object") {
+      session.agent.state.systemPrompt = finalSystemPrompt;
+    }
+  }
+
+  /** session-meta English only */
+  invalidateMetaCache(metaPath: any) {
+    this._metaCache.delete(metaPath);
+  }
+
+  /**
+   * Single entry point for all session-meta.json writes. Both the memory-toggle
+   * path (persistSessionMeta) and the tool-snapshot path (createSession) go
+   * through this method. Writes are serialized via a promise chain to prevent
+   * RMW races where two concurrent writers would each read stale meta and
+   * clobber the other's fields on write-back.
+   *
+   * @param {string} sessionPath - absolute path to the session .jsonl file
+   * @param {object} partial - fields to merge into meta[basename(sessionPath)]
+   * @returns {Promise<void>} Resolves after this write (and any writes queued
+   *   before it) has been attempted. I/O failures are logged and swallowed
+   *   internally — the returned promise never rejects.
+   */
+  writeSessionMeta(sessionPath: any, partial: any) {
+    const next = () => this._doWriteSessionMeta(sessionPath, partial);
+    // Chain on both success and failure branches so a failed write does not
+    // poison the queue — the next write still runs.
+    this._metaWriteQueue = this._metaWriteQueue.then(next, next);
+    return this._metaWriteQueue;
+  }
+
+  async _doWriteSessionMeta(sessionPath: any, partial: any) {
+    const metaPath = this._sessionMetaPathFor(sessionPath);
+    const sessKey = path.basename(sessionPath);
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const meta = await this._readSessionMetaIndexForWrite(metaPath);
+        meta[sessKey] = {
+          ...meta[sessKey],
+          ...partial,
+        };
+        // model is owned by PI SDK via session JSONL — keep session-meta clean
+        delete meta[sessKey].model;
+        delete meta[sessKey].modelId;
+        meta[sessKey] = await this._externalizeSessionMetaPayloads(metaPath, sessKey, meta[sessKey]);
+        const compactedMeta = await this._externalizeSessionMetaForIndexBudget(metaPath, meta);
+        await fsp.writeFile(metaPath, JSON.stringify(compactedMeta, null, 2));
+        this.invalidateMetaCache(metaPath);
+        this._writeSessionCapabilitySnapshot(sessionPath, partial);
+        return;
+      } catch (err) {
+        if (attempt === 0) {
+          // English onlybest-effort English only attempt English only writeFileEnglish only
+          // mkdir English only
+          try { await fsp.mkdir(path.dirname(metaPath), { recursive: true }); } catch {}
+        } else {
+          log.warn(`writeSessionMeta failed for ${sessKey}: ${err.message}`);
+        }
+      }
+    }
+  }
+
+  _isSessionMetaPayloadRef(value: any, field?: any) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    if (value.kind !== "session-meta-payload") return false;
+    if (field && value.field !== field) return false;
+    return typeof value.path === "string" && value.path.length > 0;
+  }
+
+  _sessionMetaPayloadRelativePath(sessKey: any, field: any) {
+    return path.join(SESSION_META_PAYLOAD_DIR, `${encodeURIComponent(sessKey)}.${field}.json`);
+  }
+
+  _sessionMetaPayloadAbsolutePath(metaPath: any, refPath: any) {
+    return path.join(path.dirname(metaPath), refPath);
+  }
+
+  async _readSessionMetaIndexForWrite(metaPath: any) {
+    try {
+      const stat = await fsp.stat(metaPath);
+      if (stat.size > SESSION_META_INDEX_MAX_BYTES) {
+        return await this._compactOversizedSessionMeta(metaPath);
+      }
+    } catch (err) {
+      if (err?.code !== "ENOENT") {
+        log.warn(`session-meta stat failed for write: ${err.message}`);
+      }
+      return {};
+    }
+    try {
+      return JSON.parse(await fsp.readFile(metaPath, "utf-8"));
+    } catch {
+      return {};
+    }
+  }
+
+  async _quarantineOversizedSessionMeta(metaPath: any) {
+    try {
+      const backupPath = path.join(
+        path.dirname(metaPath),
+        `session-meta.oversized.${Date.now()}.json`,
+      );
+      await fsp.rename(metaPath, backupPath);
+      this.invalidateMetaCache(metaPath);
+      log.warn(`oversized session-meta quarantined: ${backupPath}`);
+    } catch (err) {
+      if (err?.code !== "ENOENT") {
+        log.warn(`oversized session-meta quarantine failed: ${err.message}`);
+      }
+    }
+  }
+
+  async _compactOversizedSessionMeta(metaPath: any) {
+    let data;
+    try {
+      data = JSON.parse(await fsp.readFile(metaPath, "utf-8"));
+    } catch {
+      await this._quarantineOversizedSessionMeta(metaPath);
+      return {};
+    }
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+      await this._quarantineOversizedSessionMeta(metaPath);
+      return {};
+    }
+    const compacted: any = {};
+    for (const [sessKey, entry] of Object.entries(data)) {
+      compacted[sessKey] = await this._externalizeSessionMetaPayloads(metaPath, sessKey, entry);
+    }
+    const budgeted = await this._externalizeSessionMetaForIndexBudget(metaPath, compacted);
+    await fsp.writeFile(metaPath, JSON.stringify(budgeted, null, 2));
+    this.invalidateMetaCache(metaPath);
+    log.warn(`oversized session-meta compacted with payload sidecars: ${metaPath}`);
+    return budgeted;
+  }
+
+  _sessionMetaIndexSizeBytes(data: any) {
+    try {
+      return Buffer.byteLength(JSON.stringify(data, null, 2), "utf-8");
+    } catch {
+      return Number.POSITIVE_INFINITY;
+    }
+  }
+
+  _sessionMetaPayloadSizeBytes(value: any) {
+    try {
+      return Buffer.byteLength(JSON.stringify(value), "utf-8");
+    } catch {
+      return 0;
+    }
+  }
+
+  async _externalizeSessionMetaForIndexBudget(metaPath: any, meta: any) {
+    if (this._sessionMetaIndexSizeBytes(meta) <= SESSION_META_INDEX_MAX_BYTES) return meta;
+
+    const next = { ...meta };
+    const candidates: any[] = [];
+    for (const [sessKey, entry] of Object.entries(next)) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+      for (const field of SESSION_META_PAYLOAD_FIELDS) {
+        const value = (entry as any)[field];
+        if (value === undefined || this._isSessionMetaPayloadRef(value, field)) continue;
+        const byteLength = this._sessionMetaPayloadSizeBytes(value);
+        if (byteLength <= 0) continue;
+        candidates.push({ sessKey, field, byteLength });
+      }
+    }
+
+    candidates.sort((a, b) => b.byteLength - a.byteLength);
+    for (const candidate of candidates) {
+      next[candidate.sessKey] = await this._externalizeSessionMetaPayloads(
+        metaPath,
+        candidate.sessKey,
+        next[candidate.sessKey],
+        { forceFields: new Set([candidate.field]) },
+      );
+      if (this._sessionMetaIndexSizeBytes(next) <= SESSION_META_INDEX_MAX_BYTES) break;
+    }
+    return next;
+  }
+
+  async _externalizeSessionMetaPayloads(metaPath: any, sessKey: any, entry: any, options: any = {}) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
+    const forceFields = options?.forceFields instanceof Set
+      ? options.forceFields
+      : new Set(Array.isArray(options?.forceFields) ? options.forceFields : []);
+    const next = { ...entry };
+    for (const field of SESSION_META_PAYLOAD_FIELDS) {
+      const value = next[field];
+      if (value === undefined || this._isSessionMetaPayloadRef(value, field)) continue;
+      let encoded = "";
+      try {
+        encoded = JSON.stringify(value);
+      } catch {
+        continue;
+      }
+      if (
+        !forceFields.has(field)
+        && Buffer.byteLength(encoded, "utf-8") <= SESSION_META_PAYLOAD_INLINE_LIMIT_BYTES
+      ) continue;
+      const relPath = this._sessionMetaPayloadRelativePath(sessKey, field);
+      const absPath = this._sessionMetaPayloadAbsolutePath(metaPath, relPath);
+      await fsp.mkdir(path.dirname(absPath), { recursive: true });
+      await fsp.writeFile(absPath, encoded, "utf-8");
+      next[field] = {
+        kind: "session-meta-payload",
+        version: 1,
+        field,
+        path: relPath,
+      };
+    }
+    return next;
+  }
+
+  async _hydrateSessionMetaPayloads(metaPath: any, data: any) {
+    if (!data || typeof data !== "object") return {};
+    const hydrated = {};
+    for (const [sessKey, entry] of Object.entries(data)) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        hydrated[sessKey] = entry;
+        continue;
+      }
+      const next = { ...(entry as any) };
+      for (const field of SESSION_META_PAYLOAD_FIELDS) {
+        const ref = next[field];
+        if (!this._isSessionMetaPayloadRef(ref, field)) continue;
+        try {
+          const raw = await fsp.readFile(this._sessionMetaPayloadAbsolutePath(metaPath, ref.path), "utf-8");
+          next[field] = JSON.parse(raw);
+        } catch (err) {
+          log.warn(`session-meta payload read failed for ${sessKey}/${field}: ${err.message}`);
+          delete next[field];
+        }
+      }
+      hydrated[sessKey] = next;
+    }
+    return hydrated;
+  }
+
+  _sessionMetaPathFor(sessionPath: any) {
+    const agentId = this._d.agentIdFromSessionPath(sessionPath);
+    const sessionDir = agentId
+      ? path.join(this._d.agentsDir, agentId, "sessions")
+      : this._d.getAgent().sessionDir;
+    return path.join(sessionDir, "session-meta.json");
+  }
+
+  _isPromotableActivitySession(agent: any, sessionPath: any) {
+    return !!agent?.agentDir && isPathInsideDir(path.join(agent.agentDir, "activity"), sessionPath);
+  }
+
+  async _writePromotableActivitySessionMeta(agent: any, activitySessionPath: any, partial: any) {
+    if (!agent?.sessionDir || !activitySessionPath) return;
+    const promotedSessionPath = path.join(agent.sessionDir, path.basename(activitySessionPath));
+    await this.writeSessionMeta(promotedSessionPath, partial);
+  }
+
+  async _ensurePromotedActivitySessionToolMeta(agent: any, sessionPath: any) {
+    if (!agent?.sessionDir || !sessionPath) return;
+    const sessionFileName = path.basename(sessionPath);
+    const metaPath = path.join(agent.sessionDir, "session-meta.json");
+    try {
+      const meta = await this._readMetaCached(metaPath);
+      if (Array.isArray(meta?.[sessionFileName]?.toolNames)) return;
+    } catch (err) {
+      if (err.code !== "ENOENT") {
+        log.warn(`promoteActivitySession meta read failed: ${err.message}`);
+      }
+    }
+
+    let cwd = this._d.getHomeCwd?.(agent.id) || process.cwd();
+    try {
+      const manager = SessionManager.open(sessionPath, agent.sessionDir);
+      cwd = manager?.getCwd?.() || cwd;
+    } catch (err) {
+      log.warn(`promoteActivitySession could not open session for cwd: ${err.message}`);
+    }
+
+    const models = this._d.getModels?.() || {};
+    const preferredRef = agent.config?.models?.chat;
+    let model = models.defaultModel || null;
+    if (preferredRef?.id && preferredRef?.provider && Array.isArray(models.availableModels)) {
+      model = findModel(models.availableModels, preferredRef.id, preferredRef.provider) || model;
+    }
+    let execModel = model;
+    if (model && typeof models.resolveExecutionModel === "function") {
+      execModel = models.resolveExecutionModel(model);
+    }
+    const toolsSnapshot = typeof agent.getToolsSnapshot === "function"
+      ? agent.getToolsSnapshot({
+        forceMemoryEnabled: agent.memoryMasterEnabled !== false,
+        model: execModel,
+        ...(typeof agent.experienceEnabled === "boolean"
+          ? { forceExperienceEnabled: agent.experienceEnabled === true }
+          : {}),
+      })
+      : agent.tools;
+    const workspaceScope = normalizeWorkspaceScope({ primaryCwd: cwd, workspaceFolders: [] });
+    const folderScope = normalizeSessionFolderScope({
+      primaryCwd: cwd,
+      workspaceFolders: workspaceScope.workspaceFolders,
+      authorizedFolders: [],
+    });
+    const built = this._d.buildTools?.(cwd, toolsSnapshot, {
+      agentDir: agent.agentDir,
+      workspace: cwd,
+      workspaceFolders: workspaceScope.workspaceFolders,
+      authorizedFolders: folderScope.authorizedFolders,
+      getAuthorizedFolders: () => folderScope.authorizedFolders,
+      getSessionPath: () => sessionPath,
+      fileReadSessionPaths: [],
+      getPermissionMode: () => SESSION_PERMISSION_MODES.OPERATE,
+      permissionContext: { isSubagent: false },
+    }) || { tools: [], customTools: [] };
+    const toolNames = uniqueToolNames(toolNamesFromObjects([
+      ...(built.tools || []),
+      ...(built.customTools || []),
+    ]));
+    await this.writeSessionMeta(sessionPath, {
+      memoryEnabled: agent.memoryMasterEnabled !== false,
+      experienceEnabled: agent.experienceEnabled === true,
+      workspaceFolders: workspaceScope.workspaceFolders,
+      authorizedFolders: folderScope.authorizedFolders,
+      permissionMode: SESSION_PERMISSION_MODES.OPERATE,
+      accessMode: legacyAccessModeFromPermissionMode(SESSION_PERMISSION_MODES.OPERATE),
+      planMode: false,
+      toolNames,
+    });
+  }
+
+  // ── Session Context ──
+
+  createSessionContext() {
+    const models = this._d.getModels();
+    const skills = this._d.getSkills();
+    return {
+      authStorage:    models.authStorage,
+      modelRegistry:  models.modelRegistry,
+      resourceLoader: this._d.getResourceLoader(),
+      allSkills:      skills.allSkills,
+      getSkillsForAgent: (ag) => skills.getSkillsForAgent(ag),
+      buildTools:     (cwd, customTools, opts) => this._d.buildTools(cwd, customTools, opts),
+      resolveModel:   (agentConfig) => {
+        // migration #5 English only models.chat English only {id, provider}English only
+        const chatRef = agentConfig?.models?.chat;
+        const ref = (typeof chatRef === "object" && chatRef?.id && chatRef?.provider) ? chatRef : null;
+        if (!ref) {
+          if (models.defaultModel) {
+            log.log(`[resolveModel] agentConfig English only models.chatEnglish only ${models.defaultModel.provider}/${models.defaultModel.id}`);
+            return models.defaultModel;
+          }
+          log.error(`[resolveModel] agentConfig English only models.chatEnglish only`);
+          throw new Error(t("error.resolveModelNoChatModel"));
+        }
+        const found = findModel(models.availableModels, ref.id, ref.provider);
+        if (!found) {
+          // English only
+          if (models.defaultModel) {
+            log.log(`[resolveModel] English only "${ref.provider}/${ref.id}" English only ${models.defaultModel.provider}/${models.defaultModel.id}`);
+            return models.defaultModel;
+          }
+          const available = models.availableModels.map(m => `${m.provider}/${m.id}`).join(", ");
+          log.error(`[resolveModel] English only "${ref.provider}/${ref.id}"English onlyavailableModels=[${available}]`);
+          throw new Error(t("error.resolveModelNotAvailable", { id: `${ref.provider}/${ref.id}` }));
+        }
+        return found;
+      },
+    };
+  }
+
+  async promoteActivitySession(activitySessionFile: any, agentId: any) {
+    const agent = agentId ? this._d.getAgentById(agentId) : this._d.getAgent();
+    if (!agent) return null;
+    const oldPath = path.join(agent.agentDir, "activity", activitySessionFile);
+    if (!fs.existsSync(oldPath)) return null;
+
+    const newPath = path.join(agent.sessionDir, activitySessionFile);
+    try {
+      fs.mkdirSync(agent.sessionDir, { recursive: true });
+      fs.renameSync(oldPath, newPath);
+      if (this._sessionManifestStore) {
+        try {
+          await this.moveSessionLifecycle({
+            fromPath: oldPath,
+            toPath: newPath,
+            lifecycle: "active",
+            reason: "activity_session_promoted",
+            manifestDefaults: {
+              ownerAgentId: agent.id,
+              domain: "desktop",
+              kind: "chat",
+              provenance: { createdBy: "activity_session_promoted" },
+            },
+          });
+        } catch (err) {
+          fs.renameSync(newPath, oldPath);
+          throw err;
+        }
+      }
+      try {
+        await this._ensurePromotedActivitySessionToolMeta(agent, newPath);
+      } catch (err) {
+        log.warn(`promoteActivitySession meta backfill failed: ${err.message}`);
+      }
+      agent._memoryTicker?.notifyPromoted(newPath);
+      log.log(`promoted activity session: ${activitySessionFile} (agent=${agent.id})`);
+      return newPath;
+    } catch (err) {
+      log.error(`promoteActivitySession failed: ${err.message}`);
+      return null;
+    }
+  }
+
+  // ── Isolated Execution ──
+
+  /**
+   * English only session English only promptEnglish only
+   *
+   * opts:
+   *   agentId, cwd, model, persist (string English only | falsy),
+   *   toolFilter, builtinFilter, extraCustomTools, signal,
+   *   fileReadSessionPaths (string[] = parent session SessionFile scopes inherited as read-only),
+   *   subagentContext (true = English only subagent English only promptEnglish only),
+   *   approvalPolicy ("deny_on_prompt" = English only unavailable),
+   *   allowHumanApproval (false = English only approvalPolicy deny_on_prompt),
+   *   emitEvents (true English only session English only EventBus),
+   *   onSessionReady (sessionPath => void) English onlysession English onlyprompt English only
+   */
+  async executeIsolated(prompt: any, opts: any = {}) {
+    let targetAgent = opts.agentId ? this._d.getAgentById(opts.agentId) : this._d.getAgent();
+    if (!targetAgent) throw new Error(t("error.agentNotInitialized", { id: opts.agentId }));
+
+    // abort signalEnglish only
+    if (opts.signal?.aborted) {
+      return { sessionPath: null, replyText: "", error: "aborted" };
+    }
+    if (typeof this._d.ensureAgentRuntime === "function") {
+      const ensured = await this._d.ensureAgentRuntime(targetAgent.id, {
+        priority: opts.agentId ? "background" : "foreground",
+        reason: "executeIsolated",
+      });
+      if (ensured) targetAgent = ensured;
+    }
+
+    const bm = BrowserManager.instance();
+    const wasBrowserRunning = bm.hasAnyRunning;
+    const opId = `iso_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    this._headlessOps.add(opId);
+    if (this._headlessOps.size === 1) bm.setHeadless(true);
+    let tempSessionMgr;
+    let childSessionPath = null;
+    let isolatedManifest = null, isolatedSessionRef = null;
+    let isolatedManifestCreated = false;
+    let isolatedIdentityPath = null;
+    let isolatedInitializationReady = false;
+    // resume English only sessionEnglish onlycleanup English only early_abort English only cleanupTempSessionEnglish only
+    // English only abort English only#3English only
+    let isResumedSession = false;
+    const tombstoneFreshIsolatedManifest = (reason) => {
+      if (
+        isResumedSession
+        || !isolatedManifestCreated
+        || !(isolatedManifest?.sessionId || isolatedSessionRef?.sessionId)
+        || !this._sessionManifestStore?.updateLocatorLifecycle
+      ) return true;
+      const tombstonePath = isolatedManifest?.currentLocator?.path || isolatedSessionRef?.sessionPath || isolatedIdentityPath;
+      if (!tombstonePath || isolatedManifest?.lifecycle === "deleted") return true;
+      try {
+        isolatedManifest = this._sessionManifestStore.updateLocatorLifecycle(
+          isolatedManifest?.sessionId || isolatedSessionRef.sessionId,
+          tombstonePath,
+          "deleted",
+          reason,
+        );
+        return isolatedManifest?.lifecycle === "deleted";
+      } catch (manifestErr) {
+        log.warn(`isolated manifest cleanup failed: ${manifestErr?.message || manifestErr}`);
+        return false;
+      }
+    };
+    const cleanupTempSession = (reason = "isolated_ephemeral_cleanup") => {
+      if (isResumedSession) return;
+      if (!tombstoneFreshIsolatedManifest(reason)) return;
+      const sp = tempSessionMgr?.getSessionFile?.();
+      if (sp) {
+        // English only session English only best-effortEnglish only/English only isolated English only
+        try { fs.unlinkSync(sp); } catch {}
+      }
+    };
+    const rollbackFreshIsolatedInitialization = () => {
+      if (isResumedSession || isolatedInitializationReady) return;
+      if (!tombstoneFreshIsolatedManifest("isolated_initialization_failed")) return;
+      for (const candidate of new Set([
+        childSessionPath,
+        isolatedIdentityPath,
+        tempSessionMgr?.getSessionFile?.(),
+      ].filter(Boolean))) {
+        try { fs.unlinkSync(candidate); } catch {}
+      }
+    };
+    try {
+      const sessionDir = opts.persist || path.join(targetAgent.agentDir, '.ephemeral');
+      fs.mkdirSync(sessionDir, { recursive: true });
+
+      const execCwd = opts.cwd || this._d.getHomeCwd(targetAgent.id) || process.cwd();
+      const workspaceSourceSessionPath = typeof opts.parentSessionPath === "string" && opts.parentSessionPath.trim()
+        ? opts.parentSessionPath
+        : this.currentSessionPath;
+      const inheritedWorkspaceFolders = Array.isArray(opts.workspaceFolders)
+        ? opts.workspaceFolders
+        : this.getSessionWorkspaceFolders(workspaceSourceSessionPath);
+      const inheritedAuthorizedFolders = Array.isArray(opts.authorizedFolders)
+        ? opts.authorizedFolders
+        : this.getSessionAuthorizedFolders(workspaceSourceSessionPath);
+      const execWorkspaceScope = normalizeWorkspaceScope({
+        primaryCwd: execCwd,
+        workspaceFolders: inheritedWorkspaceFolders,
+      });
+      const execFolderScope = normalizeSessionFolderScope({
+        primaryCwd: execCwd,
+        workspaceFolders: execWorkspaceScope.workspaceFolders,
+        authorizedFolders: inheritedAuthorizedFolders,
+      });
+      const fileReadSessionPaths = Array.isArray(opts.fileReadSessionPaths)
+        ? opts.fileReadSessionPaths.filter((sp) => typeof sp === "string" && sp.trim())
+        : [];
+      const models = this._d.getModels();
+      // migration #5 English only models.chat English only {id, provider}English only/English only provider English only
+      const agentPreferredRef = targetAgent.config?.models?.chat;
+      const preferredRef = opts.model ? null
+        : ((typeof agentPreferredRef === "object" && agentPreferredRef?.id && agentPreferredRef?.provider)
+            ? agentPreferredRef : null);
+      let resolvedModel = opts.model;
+      if (!resolvedModel) {
+        if (preferredRef) {
+          resolvedModel = findModel(models.availableModels, preferredRef.id, preferredRef.provider);
+        }
+        if (!resolvedModel) {
+          resolvedModel = models.defaultModel;
+        }
+        if (!resolvedModel) {
+          log.error(`[executeIsolated] agent "${targetAgent.agentName}" English only models.chatEnglish only`);
+          throw new Error(t("error.executeIsolatedNoModel", { name: targetAgent.agentName }));
+        }
+        if (preferredRef && resolvedModel.id !== preferredRef.id) {
+          log.log(`[executeIsolated] English only "${preferredRef.provider}/${preferredRef.id}" English onlyfallback → ${resolvedModel.provider}/${resolvedModel.id}`);
+        }
+      }
+      const execModel = models.resolveExecutionModel(resolvedModel);
+      // resume English onlyopts.resumeSessionPath English only sessionEnglish onlysubagent English only
+      // English only restore / bridge owner English only #1285 English only toolResultEnglish only openEnglish only openEnglish only
+      // English only resumeSessionPath English only
+      const resumeExisting = typeof opts.resumeSessionPath === "string"
+        && opts.resumeSessionPath.trim()
+        && fs.existsSync(opts.resumeSessionPath);
+      if (resumeExisting) {
+        this._repairOversizedSessionHistory(opts.resumeSessionPath);
+        this._repairOrphanToolHistory(opts.resumeSessionPath);
+        this._repairInlineMediaHistory(opts.resumeSessionPath);
+        tempSessionMgr = SessionManager.open(opts.resumeSessionPath, sessionDir);
+        isResumedSession = true;
+      } else {
+        tempSessionMgr = SessionManager.create(execCwd, sessionDir);
+      }
+      const execPermissionMode = normalizeSessionPermissionMode({
+        permissionMode: opts.permissionMode || SESSION_PERMISSION_MODES.OPERATE,
+      });
+      isolatedIdentityPath = tempSessionMgr?.getSessionFile?.() || null;
+      // Old JSONL sessions can predate manifests. Establishing the ref here backfills
+      // and persists their stable ID before any tool or SDK runtime is assembled.
+      const existingManifest = this._resolveSessionManifestForPath(isolatedIdentityPath);
+      isolatedSessionRef = ensureSessionRefForPath(
+        this._sessionManifestStore,
+        isolatedIdentityPath,
+        {
+          ownerAgentId: targetAgent.id || null,
+          domain: opts.subagentContext ? "subagent" : "activity",
+          kind: opts.subagentContext ? "subagent_child" : "activity",
+          lifecycle: "active",
+          memoryPolicy: {
+            mode: targetAgent.memoryMasterEnabled !== false ? "enabled" : "disabled",
+            inheritedFrom: "isolated_session_create",
+          },
+          permissionModeSnapshot: {
+            mode: execPermissionMode,
+            source: "isolated_session_create",
+            capturedAt: new Date().toISOString(),
+          },
+          workspaceScope: {
+            primaryCwd: execCwd,
+            workspaceFolders: execWorkspaceScope.workspaceFolders,
+            authorizedFolders: execFolderScope.authorizedFolders,
+          },
+          provenance: {
+            createdBy: opts.subagentContext ? "subagent" : "activity",
+            parentSessionId: typeof opts.parentSessionId === "string" && opts.parentSessionId.trim()
+              ? opts.parentSessionId.trim()
+              : (typeof opts.parentSessionPath === "string" && opts.parentSessionPath.trim()
+                  ? this._sessionIdForPath(opts.parentSessionPath)
+                  : null),
+          },
+          migration: {},
+          locatorReason: isResumedSession ? "isolated_session_resume" : "isolated_session_create",
+        },
+      );
+      isolatedManifestCreated = !existingManifest;
+      isolatedManifest = this._resolveSessionManifestForId(isolatedSessionRef.sessionId);
+      if (!isolatedManifest) {
+        throw Object.assign(
+          new Error(`executeIsolated: persisted manifest unavailable after SessionRef backfill (${isolatedSessionRef.sessionId})`),
+          { code: "session_manifest_not_established" },
+        );
+      }
+      const targetAgentToolsSnapshot = typeof targetAgent.getToolsSnapshot === "function"
+        ? targetAgent.getToolsSnapshot({
+          forceMemoryEnabled: targetAgent.memoryMasterEnabled !== false,
+          model: execModel,
+          ...(typeof targetAgent.experienceEnabled === "boolean"
+            ? { forceExperienceEnabled: targetAgent.experienceEnabled === true }
+            : {}),
+        })
+        : targetAgent.tools;
+      const { tools: allBuiltinTools, customTools: allCustomTools } = this._d.buildTools(
+        execCwd,
+        targetAgentToolsSnapshot,
+        {
+          agentDir: targetAgent.agentDir,
+          workspace: execCwd,
+          workspaceFolders: execWorkspaceScope.workspaceFolders,
+          authorizedFolders: execFolderScope.authorizedFolders,
+          getAuthorizedFolders: () => execFolderScope.authorizedFolders,
+          runtimeSessionRef: isolatedSessionRef,
+          requireSessionIdentity: true,
+          agentId: targetAgent.id || null,
+          getAgentId: () => targetAgent.id || null,
+          fileReadSessionPaths,
+          getPermissionMode: () => execPermissionMode,
+          permissionContext: { isSubagent: !!opts.subagentContext },
+          allowHumanApproval: opts.allowHumanApproval !== false,
+          ...(opts.approvalPolicy ? { approvalPolicy: opts.approvalPolicy } : {}),
+          ...(opts.bridgeContext ? { bridgeContext: opts.bridgeContext } : {}),
+          ...(opts.notificationContext ? { notificationContext: opts.notificationContext } : {}),
+        },
+      );
+
+      const patrolAllowed = opts.toolFilter
+        || targetAgent.config?.desk?.patrol_tools
+        || PATROL_TOOLS_DEFAULT;
+      // heartbeat English onlyagent English only 3 English only
+      // English only/English only(#398)
+      const isHeartbeat = opts.activityType === "heartbeat";
+      const heartbeatBlocked = new Set(isHeartbeat ? ["automation", "cron"] : []);
+      const actCustomTools = patrolAllowed === "*"
+        ? allCustomTools.filter(t => !heartbeatBlocked.has(t.name))
+        : allCustomTools.filter(t => new Set(patrolAllowed).has(t.name) && !heartbeatBlocked.has(t.name));
+      const extraCustomTools = Array.isArray(opts.extraCustomTools)
+        ? opts.extraCustomTools.filter(t => t && typeof t.name === "string" && t.name.trim())
+        : [];
+
+      const actTools = opts.builtinFilter
+        ? allBuiltinTools.filter(t => opts.builtinFilter.includes(t.name))
+        : allBuiltinTools;
+
+      const agent = this._d.getAgent();
+      const skills = this._d.getSkills();
+      const resourceLoader = this._d.getResourceLoader();
+      let isolatedPrompt;
+      if (opts.subagentContext) {
+        // Subagent English only promptEnglish onlypinnedEnglish only agent English only
+        // English only cached systemPrompt getterEnglish only"English only prompt"English only
+        isolatedPrompt = targetAgent.buildSystemPrompt({ forSubagent: true });
+      } else {
+        // English only session English only/cron English only master English only systemPrompt cacheEnglish only
+        // per-session English only session English only
+        isolatedPrompt = targetAgent.systemPrompt;
+      }
+      const execResourceLoaderProps: any = {
+        getSystemPrompt: { value: () => isolatedPrompt },
+        getAppendSystemPrompt: {
+          value: () => {
+            const base = resourceLoader.getAppendSystemPrompt?.() || [];
+            const workspacePrompt = formatWorkspaceScopePrompt({
+              primaryCwd: execWorkspaceScope.primaryCwd,
+              workspaceFolders: execWorkspaceScope.workspaceFolders,
+              locale: targetAgent.config?.locale || getLocale(),
+            });
+            const workspaceInstructions = buildWorkspaceInstructionPrompt({
+              cwd: execWorkspaceScope.primaryCwd,
+              workspaceContext: targetAgent.config?.workspace_context,
+              locale: targetAgent.config?.locale || getLocale(),
+            });
+            return [
+              ...base,
+              ...(workspacePrompt ? [workspacePrompt] : []),
+              ...(workspaceInstructions ? [workspaceInstructions] : []),
+            ];
+          },
+        },
+      };
+      if (targetAgent !== agent) {
+        execResourceLoaderProps.getSkills = { value: () => skills.getSkillsForAgent(targetAgent) };
+      }
+      const execResourceLoader = Object.create(resourceLoader, execResourceLoaderProps);
+      const execThinkingLevel = resolveThinkingLevelForModel(
+        this._d.getPrefs().getThinkingLevel(),
+        execModel,
+        (level) => models.resolveThinkingLevel(level),
+      );
+
+      const { session } = await createAgentSession({
+        cwd: execCwd,
+        sessionManager: tempSessionMgr,
+        settingsManager: this._createSettings(execModel),
+        authStorage: models.authStorage,
+        modelRegistry: models.modelRegistry,
+        model: execModel,
+        thinkingLevel: execThinkingLevel,
+        resourceLoader: execResourceLoader,
+        tools: actTools,
+        customTools: [...actCustomTools, ...extraCustomTools],
+      });
+
+      childSessionPath = session.sessionManager?.getSessionFile?.() || null;
+      if (
+        !childSessionPath
+        || path.resolve(childSessionPath) !== path.resolve(isolatedSessionRef.sessionPath)
+      ) {
+        await teardownSessionResources({
+          session,
+          unsub: null,
+          label: "executeIsolated[identity_mismatch]",
+          warn: (msg) => log.warn(msg),
+        });
+        throw Object.assign(
+          new Error(
+            childSessionPath
+              ? "executeIsolated: runtime locator does not match the assembled SessionRef"
+              : "executeIsolated: runtime locator unavailable after SDK assembly",
+          ),
+          { code: childSessionPath ? "session_identity_conflict" : "session_locator_required" },
+        );
+      }
+      isolatedInitializationReady = true;
+      if (!isResumedSession && childSessionPath && this._isPromotableActivitySession(targetAgent, childSessionPath)) {
+        const promotedSessionPath = path.join(targetAgent.sessionDir, path.basename(childSessionPath));
+        const isolatedSkillsResult = targetAgent !== agent && skills?.getSkillsForAgent
+          ? freezeSkillsResult(skills.getSkillsForAgent(targetAgent))
+          : freezeSkillsResult(resourceLoader.getSkills?.());
+        const promptSnapshot = {
+          version: SESSION_PROMPT_SNAPSHOT_VERSION,
+          systemPrompt: isolatedPrompt,
+          appendSystemPrompt: normalizeStringArray(execResourceLoader.getAppendSystemPrompt?.()),
+          skillsResult: freezeSkillsResult(await snapshotSkillsForSession(isolatedSkillsResult, promotedSessionPath)),
+          agentsFilesResult: freezeAgentsFilesResult(resourceLoader.getAgentsFiles?.()),
+          ...(this._getFinalSystemPrompt(session)
+            ? { finalSystemPrompt: this._getFinalSystemPrompt(session) }
+            : {}),
+        };
+        await this._writePromotableActivitySessionMeta(targetAgent, childSessionPath, {
+          memoryEnabled: targetAgent.memoryMasterEnabled !== false,
+          experienceEnabled: targetAgent.experienceEnabled === true,
+          workspaceFolders: execWorkspaceScope.workspaceFolders,
+          authorizedFolders: execFolderScope.authorizedFolders,
+          permissionMode: execPermissionMode,
+          accessMode: legacyAccessModeFromPermissionMode(execPermissionMode),
+          planMode: isReadOnlyPermissionMode(execPermissionMode),
+          thinkingLevel: execThinkingLevel,
+          promptSnapshot,
+          toolNames: uniqueToolNames(toolNamesFromObjects([
+            ...(actTools || []),
+            ...(actCustomTools || []),
+            ...(extraCustomTools || []),
+          ])),
+        });
+      }
+
+      const readyChildSessionId = isolatedManifest?.sessionId
+        || (childSessionPath ? this._sessionIdForPath(childSessionPath) : null);
+      // English only session English onlysubagent English only path English only streamKeyEnglish onlyworkflow English only sessionIdEnglish only
+      try {
+        opts.onSessionReady?.(childSessionPath, {
+          ...(readyChildSessionId ? { sessionId: readyChildSessionId } : {}),
+          sessionPath: childSessionPath,
+        });
+      } catch (err) { log.warn(`isolated onSessionReady callback failed: ${err?.message}`); }
+
+      let replyText = "";
+      let finalAssistantText = "";
+      let finalStopReason = null;
+      let finalErrorMessage = null;
+      const sessionFiles = [];
+      const toolErrors = [];
+      const unsub = session.subscribe((event) => {
+        const parentSessionPath = typeof opts.parentSessionPath === "string" && opts.parentSessionPath.trim()
+          ? opts.parentSessionPath
+          : null;
+        const parentSessionId = typeof opts.parentSessionId === "string" && opts.parentSessionId.trim()
+          ? opts.parentSessionId.trim()
+          : (parentSessionPath ? this._sessionIdForPath(parentSessionPath) : null);
+        const childSessionId = childSessionPath ? this._sessionIdForPath(childSessionPath) : null;
+        recordAssistantUsage({
+          ledger: this._d.getUsageLedger?.(),
+          event,
+          sessionPath: childSessionPath,
+          sessionId: childSessionId,
+          agentId: targetAgent.id,
+          model: execModel,
+          resolveModel: (ref) => findModel(this._d.getModels?.()?.availableModels, ref.id, ref.provider),
+          source: {
+            subsystem: opts.subagentContext ? "subagent" : "automation",
+            operation: "run",
+            surface: opts.subagentContext ? "desktop" : "system",
+            trigger: opts.subagentContext ? "tool" : "scheduled",
+            ...(opts.subagentContext ? {
+              actor: {
+                kind: "subagent",
+                agentId: targetAgent.id || null,
+                ...(childSessionId ? { sessionId: childSessionId } : {}),
+                sessionPath: childSessionPath,
+                taskId: opts.subagentTaskId || null,
+                threadId: opts.subagentThreadId || null,
+                threadKind: opts.subagentThreadKind || null,
+              },
+            } : {}),
+            ...(parentSessionPath ? {
+              parent: {
+                kind: "session",
+                ...(parentSessionId ? { sessionId: parentSessionId } : {}),
+                sessionPath: parentSessionPath,
+              },
+            } : {}),
+          },
+          attribution: parentSessionPath
+            ? {
+                kind: "session",
+                agentId: this.resolveSessionOwnership(parentSessionPath).agentId || null,
+                ...(parentSessionId ? { sessionId: parentSessionId } : {}),
+                sessionPath: parentSessionPath,
+                childAgentId: opts.subagentContext ? targetAgent.id || null : undefined,
+                childSessionId: opts.subagentContext ? childSessionId || undefined : undefined,
+                childSessionPath: opts.subagentContext ? childSessionPath : undefined,
+                taskId: opts.subagentContext ? opts.subagentTaskId || null : undefined,
+                threadId: opts.subagentContext ? opts.subagentThreadId || null : undefined,
+                threadKind: opts.subagentContext ? opts.subagentThreadKind || null : undefined,
+              }
+            : { kind: opts.subagentContext ? "utility" : "automation", agentId: targetAgent.id || null },
+        });
+        if (event.type === "message_update") {
+          const sub = event.assistantMessageEvent;
+          if (sub?.type === "text_delta") {
+            replyText += sub.delta || "";
+          }
+        }
+        if (event.type === "message_end" && event.message?.role === "assistant") {
+          finalStopReason = event.message.stopReason ?? null;
+          finalErrorMessage = event.message.errorMessage || (event.message as any).error || null;
+          finalAssistantText = collectAssistantTextFromMessage(event.message) || finalAssistantText;
+        }
+        if (event.type === "tool_execution_end") {
+          if (event.isError) {
+            toolErrors.push(toolErrorSummary(event));
+          } else {
+            for (const file of collectSessionFilesFromToolResult(event.result)) {
+              addUniqueSessionFile(sessionFiles, file);
+            }
+          }
+        }
+        if (opts.emitEvents && childSessionPath) {
+          this._d.emitEvent({ ...event, isolated: true }, childSessionPath);
+        }
+      });
+
+      // isolated English only teardown: English only session English only _sessions Map English only,
+      // English only emit shutdown + dispose English only:
+      // AgentSession.dispose() English only _unsubscribeAgent English only
+      const teardownIsolatedSession = async (label) => {
+        await teardownSessionResources({
+          session,
+          unsub,
+          label: `executeIsolated[${label}]`,
+          warn: (msg) => log.warn(msg),
+        });
+      };
+
+      const abortHandler = () => session.abort();
+      opts.signal?.addEventListener("abort", abortHandler, { once: true });
+
+      if (opts.signal?.aborted) {
+        opts.signal.removeEventListener("abort", abortHandler);
+        await teardownIsolatedSession("early_abort");
+        cleanupTempSession("isolated_early_abort");
+        return { sessionPath: null, replyText: "", error: "aborted" };
+      }
+
+      try {
+        await session.prompt(prompt);
+      } finally {
+        opts.signal?.removeEventListener("abort", abortHandler);
+        await teardownIsolatedSession("finally");
+      }
+
+      const sessionPath = session.sessionManager?.getSessionFile?.() || null;
+      const finalReplyText = stripClosedInternalNarrationBlocks(replyText || finalAssistantText);
+      const completionError = isolatedCompletionError(finalStopReason, finalErrorMessage);
+
+      if (!opts.persist && !isResumedSession && sessionPath) {
+        // English only persist English only session English only best-effortEnglish only
+        // isResumedSession English onlyresume English only persist English only
+        cleanupTempSession("isolated_ephemeral_complete");
+        return {
+          sessionPath: null,
+          replyText: finalReplyText,
+          error: completionError,
+          stopReason: finalStopReason,
+          sessionFiles,
+          toolErrors,
+        };
+      }
+
+      return {
+        sessionPath,
+        replyText: finalReplyText,
+        error: completionError,
+        stopReason: finalStopReason,
+        sessionFiles,
+        toolErrors,
+      };
+    } catch (err) {
+      log.error(`isolated execution failed: ${err.message}`);
+      if (!isResumedSession && !isolatedInitializationReady) {
+        rollbackFreshIsolatedInitialization();
+      } else if (!opts.persist && tempSessionMgr) {
+        cleanupTempSession();
+      }
+      return { sessionPath: null, replyText: "", error: err.message };
+    } finally {
+      if (childSessionPath && bm.isRunning(childSessionPath)) {
+        try { await bm.closeBrowserForSession(childSessionPath); }
+        catch (err) { log.warn(`executeIsolated browser cleanup failed for ${path.basename(childSessionPath)}: ${err.message}`); }
+      }
+      this._headlessOps.delete(opId);
+      if (this._headlessOps.size === 0) bm.setHeadless(false);
+      const browserNowRunning = bm.hasAnyRunning;
+      if (browserNowRunning !== wasBrowserRunning) {
+        this._d.emitEvent({ type: "browser_bg_status", running: browserNowRunning }, null);
+      }
+    }
+  }
+
+  /** English only session English only settingsEnglish only compaction + max_completion_tokensEnglish only */
+  _createSettings(model: any) {
+    return createDefaultSettings();
+  }
+}

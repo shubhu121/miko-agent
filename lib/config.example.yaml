@@ -1,0 +1,82 @@
+# ═══════════════════════════════════════════
+
+
+# ═══════════════════════════════════════════
+
+
+agent:
+  name: Miko                             # Your assistant's name
+  yuan: miko                           # English onlyEnglish onlymiko / butter / ming
+user:
+  name: ""                               # English only
+
+
+
+api:
+  provider: ""                     # openai / anthropic / ...
+
+
+
+embedding_api:
+  provider: ""                     # embedding English only provider
+
+
+models:
+  chat: ""                         # English only
+  utility: ""                      # English onlyEnglish onlyEnglish onlyEnglish only
+  utility_large: ""                # English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only
+  embedding: ""                    # English only
+  embedding_dimensions: 1024       # English only
+
+
+
+
+
+
+
+
+
+
+memory:
+  enabled: true                   # English onlyEnglish onlyEnglish onlyEnglish onlyEnglish only
+  token_budget: 2500               # memory.md English only token English only
+  decay_per_day: 0.02              # English only λEnglish onlyEnglish onlyEnglish only
+  hit_bonus: 5                     # English only
+  base_importance: 10              # English only
+  compile_threshold: 4.5           # English only memory.md
+  forget_speed: 1.0                # English onlyEnglish only1.0 = English onlyEnglish only2.0 = English onlyEnglish only
+
+
+
+experience:
+  enabled: false
+
+
+
+
+search:
+  provider: "auto"                       # English only anysearch / anysearch_free / bing_browser / google_browser / duckduckgo_browser / tavily / brave / serper
+  api_keys:                              # auto English onlyEnglish onlyEnglish only key English only AnySearch English onlyEnglish onlyEnglish only
+    anysearch: ""
+    tavily: ""
+    brave: ""
+    serper: ""
+  api_key: ""                            # English only provider English onlyEnglish onlyEnglish only api_keys
+
+
+skills:
+  enabled: ["skill-creator"]                             # English only skill English onlyEnglish onlyEnglish only ["pdf", "literary-craft"]
+
+
+desk:
+  heartbeat_enabled: false           # English onlyEnglish onlyEnglish only
+  heartbeat_interval: 31             # English onlyEnglish onlyEnglish onlyEnglish only
+
+
+workspace_context:
+  discover_project_skills: true             # English only .agents/skills
+  discover_compatible_project_skills: false # English only
+
+
+channels:
+  enabled: false                     # English only

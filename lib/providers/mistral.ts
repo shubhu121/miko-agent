@@ -1,0 +1,10 @@
+
+
+/** @type {import('../../core/provider-registry.ts').ProviderPlugin} */
+export const mistralPlugin = {
+  id: "mistral",
+  displayName: "Mistral AI",
+  authType: "api-key",
+  defaultBaseUrl: "https://api.mistral.ai/v1",
+  defaultApi: "openai-completions",
+};

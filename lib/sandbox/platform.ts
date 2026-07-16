@@ -1,0 +1,26 @@
+
+
+import { execFileSync } from "child_process";
+
+export function detectPlatform() {
+  if (process.platform === "darwin") return "seatbelt";
+  if (process.platform === "linux") return "bwrap";
+  if (process.platform === "win32") return "win32-restricted-token";
+  return "unsupported";
+}
+
+export function checkAvailability(platform) {
+  try {
+    if (platform === "seatbelt") {
+      execFileSync("which", ["sandbox-exec"], { stdio: "ignore" });
+      return true;
+    }
+    if (platform === "bwrap") {
+      execFileSync("which", ["bwrap"], { stdio: "ignore" });
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}

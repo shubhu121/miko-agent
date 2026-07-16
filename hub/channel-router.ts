@@ -1,0 +1,1088 @@
+   
+                                       
+  
+                                            
+                                      
+  
+         
+                                             
+                                             
+                                             
+                                                 
+                                                  
+                                       
+   
+
+import fs from "fs";
+import path from "path";
+import { createChannelTicker } from "../lib/channels/channel-ticker.ts";
+import { Type } from "../lib/pi-sdk/index.ts";
+import { appendMessage, formatMessagesForLLM, getChannelMembers, getChannelMeta, getRecentMessages } from "../lib/channels/channel-store.ts";
+import { extractMentionedAgentIds } from "../lib/channels/channel-mentions.ts";
+import { loadConfig } from "../lib/memory/config-loader.ts";
+import { callText } from "../core/llm-client.ts";
+import { callTextConfigFromUtilityConfig } from "../core/model-execution-config.ts";
+import { runAgentPhoneSession } from "./agent-executor.ts";
+import { debugLog, createModuleLogger } from "../lib/debug-log.ts";
+import { getLocale } from "../lib/i18n.ts";
+import {
+  recordAgentPhoneActivity,
+} from "../lib/conversations/agent-phone-projection.ts";
+import {
+  readAgentPhoneRuntime,
+  resolveAgentPhoneRuntimeSessionPath,
+} from "../lib/conversations/agent-phone-runtime.ts";
+import { normalizeAgentPhoneToolMode } from "../lib/conversations/agent-phone-session.ts";
+import {
+  DEFAULT_AGENT_PHONE_SETTINGS,
+  formatAgentPhonePromptGuidance,
+  normalizeAgentPhoneModelOverride,
+  positiveIntegerOrDefault,
+  positiveIntegerOrNull,
+} from "../lib/conversations/agent-phone-prompt.ts";
+
+const log = createModuleLogger("channel");
+const MAX_CHANNEL_DECISION_REPAIR_ATTEMPTS = 1;
+
+export class ChannelRouter {
+  /**
+   * @param {object} opts
+   * @param {import('./index.ts').Hub} opts.hub
+   */
+  static _AGENT_ORDER_TTL = 30_000;        
+
+  declare _hub: any;
+  declare _ticker: any;
+  declare _agentOrderCache: any;
+
+  constructor({ hub }) {
+    this._hub = hub;
+    this._ticker = null;
+    this._agentOrderCache = null; // { list: string[], ts: number }
+  }
+
+  /** @returns {import('../core/engine.ts').MikoEngine} */
+  get _engine() { return this._hub.engine; }
+
+  _getAgentInstance(agentId) {
+    return this._engine.getAgent?.(agentId)
+      || this._engine.agents?.get?.(agentId)
+      || null;
+  }
+
+  _resolveMemoryMasterEnabled(agentId, { agentInstance = null, cfg = null } = {}) {
+    if (agentInstance) return agentInstance.memoryMasterEnabled !== false;
+    const resolvedCfg = cfg || loadConfig(path.join(this._engine.agentsDir, agentId, "config.yaml"));
+    return resolvedCfg?.memory?.enabled !== false;
+  }
+
+  async _recordPhoneActivity(agentId, channelName, state, summary, details = {}) {
+    try {
+      const agent = this._getAgentInstance(agentId);
+      const agentDir = agent?.agentDir || path.join(this._engine.agentsDir, agentId);
+      const activity = {
+        conversationId: channelName,
+        conversationType: "channel",
+        agentId,
+        state,
+        summary,
+        details,
+      };
+      this._hub.agentPhoneActivities?.record?.(activity);
+      await recordAgentPhoneActivity({
+        agentDir,
+        ...activity,
+      });
+    } catch (err) {
+      debugLog()?.warn?.("channel", `phone activity record failed (${agentId}/#${channelName}): ${err.message}`);
+    }
+  }
+
+  _resolvePhoneToolMode(channelName) {
+    try {
+      const filePath = path.join(this._engine.channelsDir, `${channelName}.md`);
+      if (!fs.existsSync(filePath)) return "read_only";
+      return normalizeAgentPhoneToolMode((getChannelMeta(filePath) as any).agentPhoneToolMode);
+    } catch {
+      return "read_only";
+    }
+  }
+
+  _resolveChannelPhoneSettings(channelName) {
+    try {
+      const filePath = path.join(this._engine.channelsDir, `${channelName}.md`);
+      if (!fs.existsSync(filePath)) {
+        return DEFAULT_AGENT_PHONE_SETTINGS;
+      }
+      const meta: any = getChannelMeta(filePath);
+      const override = normalizeAgentPhoneModelOverride({
+        enabled: meta.agentPhoneModelOverrideEnabled,
+        id: meta.agentPhoneModelOverrideId,
+        provider: meta.agentPhoneModelOverrideProvider,
+      });
+      return {
+        toolMode: normalizeAgentPhoneToolMode(meta.agentPhoneToolMode),
+        replyMinChars: positiveIntegerOrNull(meta.agentPhoneReplyMinChars),
+        replyMaxChars: positiveIntegerOrNull(meta.agentPhoneReplyMaxChars),
+        reminderIntervalMinutes: positiveIntegerOrDefault(
+          meta.agentPhoneReminderIntervalMinutes,
+          DEFAULT_AGENT_PHONE_SETTINGS.reminderIntervalMinutes,
+        ),
+        modelOverrideEnabled: override.enabled,
+        modelOverrideModel: override.model,
+      };
+    } catch {
+      return DEFAULT_AGENT_PHONE_SETTINGS;
+    }
+  }
+
+  _formatPhonePromptGuidance(agentId, settings, isZh) {
+    return (formatAgentPhonePromptGuidance as any)({
+      agentId,
+      agent: this._getAgentInstance(agentId),
+      agentsDir: this._engine.agentsDir,
+      settings,
+      isZh,
+      zhConversationName: "This feature is available in English only.",
+      enConversationName: "channel",
+    });
+  }
+
+  _resolvePhoneSessionPath(agentId, channelName) {
+    try {
+      const agent = this._getAgentInstance(agentId);
+      const agentDir = agent?.agentDir || path.join(this._engine.agentsDir, agentId);
+      return resolveAgentPhoneRuntimeSessionPath(agentDir, readAgentPhoneRuntime(agentDir, channelName));
+    } catch {
+      return null;
+    }
+  }
+
+  _createChannelPhoneTools(agentId, channelName, { setDecision }: any = {}) {
+    const engine = this._engine;
+    const isZh = getLocale().startsWith("zh");
+    const channelFile = path.join(engine.channelsDir || "", `${channelName}.md`);
+    let decided = false;
+
+    const markDecision = (decision) => {
+      if (decided) return false;
+      decided = true;
+      setDecision?.(decision);
+      return true;
+    };
+    const isCurrentMember = () => {
+      if (!fs.existsSync(channelFile)) return false;
+      return getChannelMembers(channelFile).includes(agentId);
+    };
+    const notMemberResult = (action) => ({
+      content: [{
+        type: "text",
+        text: isZh ? "This feature is available in English only." : "Action failed: you are no longer a member of this channel.",
+      }],
+      details: { action, error: "not a channel member" },
+    });
+
+    return [
+      {
+        name: "channel_read_context",
+        label: isZh ? "This feature is available in English only." : "Read channel context",
+        description: isZh
+          ? "This feature is available in English only."
+          : "Read recent messages from the current phone channel. The source is the channel transcript Truth, not your phone session.",
+        parameters: Type.Object({
+          count: Type.Optional(Type.Number({
+            description: isZh ? "This feature is available in English only." : "Number of recent messages to read, defaults to 20, max 50.",
+          })),
+        }),
+        execute: async (_toolCallId, params: any = {}) => {
+          if (!fs.existsSync(channelFile)) {
+            return {
+              content: [{ type: "text", text: isZh ? "This feature is available in English only." : "Channel not found." }],
+              details: { action: "read_context", error: "channel not found" },
+            };
+          }
+          if (!isCurrentMember()) return notMemberResult("read_context");
+          const count = Math.max(1, Math.min(50, Number(params.count) || 20));
+          const messages = (getRecentMessages as any)(channelFile, count);
+          return {
+            content: [{
+              type: "text",
+              text: messages.length > 0 ? formatMessagesForLLM(messages) : (isZh ? "This feature is available in English only." : "No channel messages."),
+            }],
+            details: { action: "read_context", channel: channelName, messageCount: messages.length },
+          };
+        },
+      },
+      {
+        name: "channel_reply",
+        label: isZh ? "This feature is available in English only." : "Send channel message",
+        description: isZh
+          ? "This feature is available in English only."
+          : "Send this turn's reply to the current channel. Only this tool's content is posted; ordinary generated text stays in your phone activity.",
+        parameters: Type.Object({
+          content: Type.String({
+            description: isZh ? "This feature is available in English only." : "Message body to post. Do not include mood, explanations, or tool-call notes.",
+          }),
+          mood: Type.Optional(Type.String({
+            description: isZh ? "This feature is available in English only." : "Optional private mood summary. Stored in tool details, not posted.",
+          })),
+        }),
+        execute: async (_toolCallId, params: any = {}) => {
+          const content = String(params.content || "").trim();
+          if (!content) {
+            return {
+              content: [{ type: "text", text: isZh ? "This feature is available in English only." : "Send failed: content is empty." }],
+              details: { action: "reply", error: "empty content" },
+            };
+          }
+          if (decided) {
+            return {
+              content: [{ type: "text", text: isZh ? "This feature is available in English only." : "This phone turn already made a channel decision." }],
+              details: { action: "reply", error: "already decided" },
+            };
+          }
+          if (engine.isChannelsEnabled && !engine.isChannelsEnabled()) {
+            return {
+              content: [{ type: "text", text: isZh ? "This feature is available in English only." : "Send failed: channels are disabled." }],
+              details: { action: "reply", error: "channels disabled" },
+            };
+          }
+          if (!fs.existsSync(channelFile)) {
+            return {
+              content: [{ type: "text", text: isZh ? "This feature is available in English only." : "Send failed: channel not found." }],
+              details: { action: "reply", error: "channel not found" },
+            };
+          }
+          if (!isCurrentMember()) {
+            markDecision({
+              type: "permission_blocked",
+              replied: false,
+              permissionBlocked: true,
+              reason: "not a channel member",
+            });
+            return notMemberResult("reply");
+          }
+
+          const { timestamp } = await appendMessage(channelFile, agentId, content);
+          const decision = {
+            type: "reply",
+            replied: true,
+            replyContent: content,
+            timestamp,
+            mood: typeof params.mood === "string" ? params.mood : null,
+          };
+          markDecision(decision);
+
+          this._hub.eventBus.emit({
+            type: "channel_new_message",
+            channelName,
+            sender: agentId,
+            message: { sender: agentId, timestamp, body: content },
+          }, null);
+
+          return {
+            content: [{ type: "text", text: isZh ? "This feature is available in English only." : `Posted to #${channelName}` }],
+            details: { action: "reply", channel: channelName, timestamp, mood: decision.mood },
+          };
+        },
+      },
+      {
+        name: "channel_pass",
+        label: isZh ? "This feature is available in English only." : "Pass this turn",
+        description: isZh
+          ? "This feature is available in English only."
+          : "Mark these phone channel messages as seen while choosing not to post this turn.",
+        parameters: Type.Object({
+          reason: Type.Optional(Type.String({
+            description: isZh ? "This feature is available in English only." : "Brief reason for not posting this turn.",
+          })),
+          mood: Type.Optional(Type.String({
+            description: isZh ? "This feature is available in English only." : "Optional private mood summary for this decision.",
+          })),
+        }),
+        execute: async (_toolCallId, params: any = {}) => {
+          if (decided) {
+            return {
+              content: [{ type: "text", text: isZh ? "This feature is available in English only." : "This phone turn already made a channel decision." }],
+              details: { action: "pass", error: "already decided" },
+            };
+          }
+          if (!isCurrentMember()) {
+            markDecision({
+              type: "permission_blocked",
+              replied: false,
+              permissionBlocked: true,
+              reason: "not a channel member",
+            });
+            return notMemberResult("pass");
+          }
+          const decision = {
+            type: "pass",
+            replied: false,
+            passed: true,
+            reason: typeof params.reason === "string" ? params.reason : "",
+            mood: typeof params.mood === "string" ? params.mood : null,
+          };
+          markDecision(decision);
+          return {
+            content: [{ type: "text", text: isZh ? "This feature is available in English only." : "Marked as pass for this turn." }],
+            details: { action: "pass", channel: channelName, reason: decision.reason, mood: decision.mood },
+          };
+        },
+      },
+    ];
+  }
+
+                                   
+
+  start() {
+    const engine = this._engine;
+    if (!engine.channelsDir) return;
+    if (this._ticker) return;
+
+    this._ticker = createChannelTicker({
+      channelsDir: engine.channelsDir,
+      agentsDir: engine.agentsDir,
+      getAgentOrder: () => this.getAgentOrder(),
+      executeCheck: (agentId, channelName, newMessages, allUpdates, opts) =>
+        this._executeCheck(agentId, channelName, newMessages, allUpdates, opts),
+      onMemorySummarize: (agentId, channelName, contextText) =>
+        this._memorySummarize(agentId, channelName, contextText),
+      onEvent: (event, data) => {
+        this._hub.eventBus.emit({ type: event, ...data }, null);
+      },
+      isEnabled: () => engine.isChannelsEnabled?.() !== false,
+    });
+    this._ticker.start();
+  }
+
+  ensureStarted() {
+    if (this._ticker) return true;
+    if (!this._engine.isChannelsEnabled?.()) return false;
+    this.start();
+    this.setupPostHandler();
+    return !!this._ticker;
+  }
+
+  async stop() {
+    if (this._ticker) {
+      await this._ticker.stop();
+      this._ticker = null;
+    }
+  }
+
+  async toggle(enabled) {
+    if (enabled) {
+      if (this._ticker) return;
+      this.start();
+      this.setupPostHandler();
+    } else {
+      await this.stop();
+    }
+  }
+
+  triggerImmediate(channelName, opts) {
+    this.ensureStarted();
+    return this._ticker?.triggerImmediate(channelName, opts) || Promise.resolve();
+  }
+
+  refreshProactiveSchedule() {
+    if (!this.ensureStarted()) return;
+    this._ticker?.refreshSchedule?.();
+  }
+
+  tickerSnapshot(channelName) {
+    if (!this.ensureStarted()) return null;
+    return this._ticker?.snapshot?.(channelName) || null;
+  }
+
+  _listMentionableAgents() {
+    if (typeof this._engine.listAgents === "function") {
+      return this._engine.listAgents();
+    }
+    return this.getAgentOrder().map((id) => {
+      const agent = this._getAgentInstance(id);
+      if (agent?.agentName) return { id, name: agent.agentName, agentName: agent.agentName };
+      try {
+        const cfg = loadConfig(path.join(this._engine.agentsDir, id, "config.yaml"));
+        return { id, name: cfg?.agent?.name || id };
+      } catch {
+        return { id, name: id };
+      }
+    });
+  }
+
+  _extractMentionedAgents(channelName, message) {
+    const text = typeof message === "string" ? message : message?.body;
+    if (!text) return [];
+    const channelFile = path.join(this._engine.channelsDir || "", `${channelName}.md`);
+    const meta: any = getChannelMeta(channelFile);
+    return extractMentionedAgentIds(text, {
+      channelMembers: Array.isArray(meta.members) ? meta.members : [],
+      agents: this._listMentionableAgents(),
+    });
+  }
+
+     
+                          
+                                               
+     
+  setupPostHandler() {
+    for (const [, agent] of this._engine.agents || []) {
+      agent.setChannelPostHandler((channelName, senderId, message) => {
+        debugLog()?.log("channel", `agent ${senderId} posted to #${channelName}, triggering phone delivery`);
+        if (message) {
+          this._hub.eventBus.emit({
+            type: "channel_new_message",
+            channelName,
+            sender: senderId,
+            message,
+          }, null);
+        }
+        const mentionedAgents = this._extractMentionedAgents(channelName, message);
+        const opts = mentionedAgents.length > 0 ? { mentionedAgents } : undefined;
+        this.triggerImmediate(channelName, opts)?.catch(err =>
+          log.error("This feature is available in English only.")
+        );
+      });
+    }
+  }
+
+                                          
+
+                                                                   
+  getAgentOrder() {
+    const now = Date.now();
+    if (this._agentOrderCache && now - this._agentOrderCache.ts < ChannelRouter._AGENT_ORDER_TTL) {
+      return this._agentOrderCache.list;
+    }
+    try {
+      const entries = fs.readdirSync(this._engine.agentsDir, { withFileTypes: true });
+      const list = entries
+        .filter(e => e.isDirectory())
+        .filter(e => {
+          const configPath = path.join(this._engine.agentsDir, e.name, "config.yaml");
+          return fs.existsSync(configPath);
+        })
+        .map(e => e.name);
+      this._agentOrderCache = { list, ts: now };
+      return list;
+    } catch {
+      return [];
+    }
+  }
+
+  // ──────────── Phone Delivery + Reply ────────────
+
+     
+                                                       
+                                     
+     
+  async _executeCheck(agentId, channelName, newMessages, _allChannelUpdates, {
+    signal,
+    proactive = false,
+    mentionedAgents = [],
+    mentionTargeted = false,
+    deliveryWindow = null,
+  }: any = {}) {
+    const msgText = formatMessagesForLLM(newMessages);
+    const isZh = getLocale().startsWith("zh");
+    const lastNewMessage = newMessages[newMessages.length - 1] || null;
+    await this._recordPhoneActivity(
+      agentId,
+      channelName,
+      "viewed",
+      isZh ? "This feature is available in English only." : `Viewed ${newMessages.length} new message(s)`,
+      {
+        messageCount: newMessages.length,
+        totalUnreadCount: deliveryWindow?.totalUnreadCount ?? newMessages.length,
+        droppedUnreadCount: deliveryWindow?.droppedUnreadCount ?? 0,
+        bookmarkState: deliveryWindow?.bookmarkState ?? null,
+        lastMessageTimestamp: lastNewMessage?.timestamp || null,
+      },
+    );
+
+                                                   
+    try {
+      await this._recordPhoneActivity(
+        agentId,
+        channelName,
+        "replying",
+        proactive
+          ? (isZh ? "This feature is available in English only." : "Received channel reminder and is reading")
+          : (isZh ? "This feature is available in English only." : "Reading phone channel messages"),
+        {
+          messageCount: newMessages.length,
+          proactive,
+          totalUnreadCount: deliveryWindow?.totalUnreadCount ?? newMessages.length,
+          droppedUnreadCount: deliveryWindow?.droppedUnreadCount ?? 0,
+        },
+      );
+      let repairAttempts = 0;
+      let decision = await this._executeReply(agentId, channelName, msgText, {
+        signal,
+        messageCount: newMessages.length,
+        deliveryWindow,
+        proactive,
+        mentionedAgents,
+        mentionTargeted,
+      });
+
+      while (
+        decision?.missingDecision === true
+        && repairAttempts < MAX_CHANNEL_DECISION_REPAIR_ATTEMPTS
+        && !signal?.aborted
+      ) {
+        repairAttempts += 1;
+        await this._recordPhoneActivity(
+          agentId,
+          channelName,
+          "retrying",
+          isZh ? "This feature is available in English only." : "Repairing missing channel decision",
+          {
+            messageCount: newMessages.length,
+            repairAttempt: repairAttempts,
+            maxRepairAttempts: MAX_CHANNEL_DECISION_REPAIR_ATTEMPTS,
+            ...(decision?.diagnostics ? { diagnostics: decision.diagnostics } : {}),
+            ...(this._resolvePhoneSessionPath(agentId, channelName)
+              ? { sessionPath: this._resolvePhoneSessionPath(agentId, channelName) }
+              : {}),
+          },
+        );
+        decision = await this._executeReply(agentId, channelName, msgText, {
+          signal,
+          messageCount: newMessages.length,
+          deliveryWindow,
+          proactive,
+          mentionedAgents,
+          mentionTargeted,
+          decisionRepairAttempt: repairAttempts,
+        });
+      }
+
+      if (decision?.replied) {
+        log.log(`${agentId} replied #${channelName} (${decision.replyContent.length} chars)`);
+        await this._recordPhoneActivity(
+          agentId,
+          channelName,
+          "idle",
+          isZh ? "This feature is available in English only." : "Replied",
+          {
+            replyTimestamp: decision.timestamp,
+            ...(decision.mood ? { mood: decision.mood } : {}),
+            ...(this._resolvePhoneSessionPath(agentId, channelName)
+              ? { sessionPath: this._resolvePhoneSessionPath(agentId, channelName) }
+              : {}),
+          },
+        );
+        return { replied: true, replyContent: decision.replyContent };
+      }
+
+      if (decision?.passed) {
+        await this._recordPhoneActivity(
+          agentId,
+          channelName,
+          "no_reply",
+          isZh ? "This feature is available in English only." : "Viewed and chose not to post",
+          {
+            messageCount: newMessages.length,
+            ...(decision.reason ? { reason: decision.reason } : {}),
+            ...(decision.mood ? { mood: decision.mood } : {}),
+            ...(this._resolvePhoneSessionPath(agentId, channelName)
+              ? { sessionPath: this._resolvePhoneSessionPath(agentId, channelName) }
+              : {}),
+          },
+        );
+        return { replied: false, passed: true };
+      }
+
+      if (decision?.permissionBlocked) {
+        await this._recordPhoneActivity(
+          agentId,
+          channelName,
+          "error",
+          isZh ? "This feature is available in English only." : "Channel membership changed; skipped this phone check",
+          {
+            messageCount: newMessages.length,
+            reason: decision.reason || "permission blocked",
+            ...(decision?.diagnostics ? { diagnostics: decision.diagnostics } : {}),
+            ...(this._resolvePhoneSessionPath(agentId, channelName)
+              ? { sessionPath: this._resolvePhoneSessionPath(agentId, channelName) }
+              : {}),
+          },
+        );
+        return { replied: false, permissionBlocked: true };
+      }
+
+      await this._recordPhoneActivity(
+          agentId,
+          channelName,
+          "error",
+          isZh ? "This feature is available in English only." : "Did not call a channel decision tool",
+          {
+            messageCount: newMessages.length,
+            repairAttempts,
+            implicitPass: repairAttempts >= MAX_CHANNEL_DECISION_REPAIR_ATTEMPTS,
+            ...(decision?.diagnostics ? { diagnostics: decision.diagnostics } : {}),
+            ...(this._resolvePhoneSessionPath(agentId, channelName)
+              ? { sessionPath: this._resolvePhoneSessionPath(agentId, channelName) }
+              : {}),
+          },
+        );
+      return {
+        replied: false,
+        missingDecision: true,
+        implicitPass: repairAttempts >= MAX_CHANNEL_DECISION_REPAIR_ATTEMPTS,
+        repairAttempts,
+      };
+    } catch (err) {
+      log.error("This feature is available in English only.");
+      await this._recordPhoneActivity(
+        agentId,
+        channelName,
+        "error",
+        isZh ? "This feature is available in English only." : "Failed to process message",
+        { error: err.message },
+      );
+      return { replied: false };
+    }
+  }
+
+     
+                                                              
+     
+  _formatMentionGuidance(agentId, mentionedAgents, mentionTargeted, isZh) {
+    const ids = Array.from(new Set(
+      Array.isArray(mentionedAgents)
+        ? mentionedAgents.filter((id) => typeof id === "string" && id.trim()).map((id) => id.trim())
+        : [],
+    ));
+    if (ids.length === 0) return "";
+
+    const names = ids
+      .map((id) => this._resolveChannelMemorySenderName(id, isZh))
+      .filter(Boolean)
+      .join(isZh ? "English only" : ", ");
+    if (mentionTargeted || ids.includes(agentId)) {
+      return isZh
+        ? [
+          "This feature is available in English only.",
+          "This feature is available in English only.",
+        ].join("\n")
+        : [
+          `- This turn explicitly @mentioned you (${names || agentId}); you were prioritized for this phone check`,
+          "- Decide whether a reply is useful; if there is nothing to add, call channel_pass",
+        ].join("\n");
+    }
+
+    return isZh
+      ? [
+        "This feature is available in English only.",
+        "This feature is available in English only.",
+      ].join("\n")
+      : [
+        `- This turn explicitly @mentioned ${names || ids.join(", ")}. You can still see this channel Truth, but do not steal the reply`,
+        "- Unless you truly need to add context, correct something, or move the topic forward, call channel_pass",
+      ].join("\n");
+  }
+
+  _formatChannelBehaviorGuidance(agentId, mentionedAgents, mentionTargeted, isZh) {
+    const mentionGuidance = this._formatMentionGuidance(agentId, mentionedAgents, mentionTargeted, isZh);
+    if (mentionGuidance) return mentionGuidance;
+    return isZh
+      ? [
+        "This feature is available in English only.",
+        "This feature is available in English only.",
+      ].join("\n")
+      : [
+        "- You may post because you were asked, mentioned, have something useful to add, want to move the topic, want to start a topic, or feel it is worth saying",
+        "- You do not need the topic to be directly about you",
+      ].join("\n");
+  }
+
+     
+                                                
+                               
+     
+  _formatChannelIdentityGuidance(agentId, channelName, isZh) {
+    let members = [];
+    try {
+      const channelFile = path.join(this._engine.channelsDir || "", `${channelName}.md`);
+      const meta: any = getChannelMeta(channelFile);
+      members = Array.isArray(meta?.members) ? meta.members : [];
+    } catch {
+      members = [];
+    }
+    const selfName = this._resolveChannelMemorySenderName(agentId, isZh);
+    const memberNames = members
+      .map((id) => {
+        const display = this._resolveChannelMemorySenderName(id, isZh);
+        if (id === agentId) return isZh ? "This feature is available in English only." : `${display} (you)`;
+        return display;
+      })
+      .filter(Boolean);
+    const memberLine = memberNames.length
+      ? (isZh
+        ? "This feature is available in English only."
+        : `- Channel members: ${memberNames.join(", ")}; the name at the start of each line is the speaker`)
+      : "";
+    const identityLine = isZh
+      ? "This feature is available in English only."
+      : `- In this channel you only speak as ${selfName}; other members' messages, personas, and memories are not yours — do not speak for them or treat their experiences as your own`;
+    return [memberLine, identityLine].filter(Boolean).join("\n");
+  }
+
+  _formatDeliveryWindowGuidance(deliveryWindow, isZh) {
+    const dropped = Number(deliveryWindow?.droppedUnreadCount || 0);
+    if (dropped <= 0) return "";
+    return isZh
+      ? [
+        "This feature is available in English only.",
+        "This feature is available in English only.",
+      ].join("\n")
+      : [
+        `Note: ${dropped} older unread message(s) were not included in this delivery window.`,
+        "Use channel_read_context to read the channel Truth when you need older context, and interpret this window together with the prior Phone Session content.",
+      ].join("\n");
+  }
+
+  _formatDecisionRepairGuidance(isZh) {
+    return isZh
+      ? [
+        "This feature is available in English only.",
+        "This feature is available in English only.",
+        "This feature is available in English only.",
+      ].join("\n")
+      : [
+        "The previous phone turn did not call channel_reply or channel_pass.",
+        "This is not a duplicate delivery of new messages; it is a repair turn for the same channel decision. You must now call exactly one of channel_reply or channel_pass.",
+        "If no channel post is needed, call channel_pass; do not only write ordinary text.",
+      ].join("\n");
+  }
+
+  async _executeReply(agentId, channelName, msgText, {
+    signal,
+    messageCount = null,
+    deliveryWindow = null,
+    proactive = false,
+    mentionedAgents = [],
+    mentionTargeted = false,
+    decisionRepairAttempt = 0,
+  }: any = {}) {
+    const isZh = getLocale().startsWith("zh");
+    const phoneSettings = this._resolveChannelPhoneSettings(channelName);
+    const promptGuidance = this._formatPhonePromptGuidance(agentId, phoneSettings, isZh);
+    const identityGuidance = this._formatChannelIdentityGuidance(agentId, channelName, isZh);
+    const behaviorGuidance = this._formatChannelBehaviorGuidance(agentId, mentionedAgents, mentionTargeted, isZh);
+    const deliveryWindowGuidance = this._formatDeliveryWindowGuidance(deliveryWindow, isZh);
+    const repairGuidance = decisionRepairAttempt > 0 ? this._formatDecisionRepairGuidance(isZh) : "";
+    const zhIntro = proactive
+      ? "This feature is available in English only."
+        + "This feature is available in English only."
+      : "This feature is available in English only."
+        + "This feature is available in English only.";
+    const enIntro = proactive
+      ? `Your phone received a channel reminder for #${channelName}.\n\n`
+        + `Here is recent channel content. The source is the channel transcript Truth, not a direct user request, and it may not be new:\n\n`
+      : `Your phone received new messages in #${channelName}.\n\n`
+        + `These are the unprocessed new messages inside this delivery window, not the channel's full history. The source is the channel transcript Truth, not a direct user request:\n\n`;
+    let activeSessionPath = null;
+    let decision = null;
+    let phoneDiagnostics = null;
+    try {
+      const phoneResult = await runAgentPhoneSession(
+        agentId,
+        [
+          {
+            text: isZh
+              ? zhIntro
+                + "This feature is available in English only."
+                + `${deliveryWindowGuidance ? `${deliveryWindowGuidance}\n\n` : ""}`
+                + `${repairGuidance ? `${repairGuidance}\n\n` : ""}`
+                + "This feature is available in English only."
+                + `${identityGuidance ? `${identityGuidance}\n` : ""}`
+                + `${behaviorGuidance}\n`
+                + "This feature is available in English only."
+                + "This feature is available in English only."
+                + `${promptGuidance}\n`
+                + "This feature is available in English only."
+                + "This feature is available in English only."
+              : enIntro
+                + `${msgText || "(No new messages)"}\n\n`
+                + `${deliveryWindowGuidance ? `${deliveryWindowGuidance}\n\n` : ""}`
+                + `${repairGuidance ? `${repairGuidance}\n\n` : ""}`
+                + `Read and act like a group chat member:\n`
+                + `${identityGuidance ? `${identityGuidance}\n` : ""}`
+                + `${behaviorGuidance}\n`
+                + `- Use channel_read_context for older channel Truth; use search_memory for facts and long-term background\n`
+                + `- Interpret this batch together with the prior Phone Session content; this delivery window is not the channel's full history\n`
+                + `${promptGuidance}\n`
+                + `- End this turn by calling exactly one of channel_reply or channel_pass\n`
+                + `- Do not write the final channel reply as ordinary text; only channel_reply.content enters the channel`,
+            capture: true,
+          },
+        ],
+        {
+          engine: this._engine,
+          signal,
+          conversationId: channelName,
+          conversationType: "channel",
+          toolMode: phoneSettings.toolMode,
+          modelOverride: phoneSettings.modelOverrideEnabled ? phoneSettings.modelOverrideModel : null,
+          emitEvents: true,
+          returnDiagnostics: true,
+          extraCustomTools: this._createChannelPhoneTools(agentId, channelName, {
+            setDecision: (next) => { if (!decision) decision = next; },
+          }),
+          onSessionReady: (sessionPath) => {
+            activeSessionPath = sessionPath;
+            return this._recordPhoneActivity(
+              agentId,
+              channelName,
+              "replying",
+              isZh ? "This feature is available in English only." : "Reading phone channel messages",
+              {
+                ...(messageCount != null ? { messageCount } : {}),
+                sessionPath,
+              },
+            );
+          },
+          onActivity: (state, summary, details) =>
+            this._recordPhoneActivity(
+              agentId,
+              channelName,
+              state,
+              summary,
+              {
+                ...(details || {}),
+                ...(activeSessionPath ? { sessionPath: activeSessionPath } : {}),
+              },
+          ),
+        } as any,
+      );
+      if (phoneResult && typeof phoneResult === "object") {
+        phoneDiagnostics = phoneResult.diagnostics || null;
+      }
+    } catch (err) {
+      if (decision) {
+        return { ...decision, abortedAfterDecision: true };
+      }
+      throw err;
+    }
+
+    return decision
+      ? { ...decision, diagnostics: phoneDiagnostics }
+      : { replied: false, missingDecision: true, diagnostics: phoneDiagnostics };
+  }
+
+  _resolveChannelMemorySenderName(sender, isZh) {
+    const rawSender = String(sender || "").trim();
+    if (!rawSender) return isZh ? "This feature is available in English only." : "Unknown";
+    if (rawSender === "system") return isZh ? "This feature is available in English only." : "System";
+
+    const engine = this._engine;
+    if (rawSender === "user" || rawSender === engine.userName) {
+      return engine.userName || (isZh ? "This feature is available in English only." : "User");
+    }
+
+    const agent = this._getAgentInstance(rawSender);
+    if (agent?.agentName) return agent.agentName;
+
+    try {
+      const cfg = loadConfig(path.join(engine.agentsDir, rawSender, "config.yaml"));
+      const name = cfg?.agent?.name;
+      if (typeof name === "string" && name.trim()) return name.trim();
+    } catch {
+      // Best effort for legacy channel logs whose sender no longer exists.
+    }
+
+    return rawSender;
+  }
+
+  _formatChannelMemoryContext(agentId, payload, isZh) {
+    if (typeof payload === "string") return payload;
+
+    const lines = [];
+    const messages = Array.isArray(payload?.messages) ? payload.messages : [];
+    for (const message of messages) {
+      const speaker = this._resolveChannelMemorySenderName(message?.sender, isZh);
+      const body = String(message?.body || "").trim();
+      if (!body) continue;
+      const timestamp = String(message?.timestamp || "").trim();
+      lines.push(timestamp ? `[${timestamp}] ${speaker}: ${body}` : `${speaker}: ${body}`);
+    }
+
+    const replyContent = String(payload?.replyContent || "").trim();
+    if (replyContent) {
+      const replyLabel = isZh ? "This feature is available in English only." : "[My reply]";
+      const agentName = this._resolveChannelMemorySenderName(agentId, isZh);
+      lines.push(`${replyLabel} ${agentName}: ${replyContent}`);
+    }
+
+    const legacyText = String(payload?.contextText || "").trim();
+    if (legacyText) lines.push(legacyText);
+    return lines.join("\n\n");
+  }
+
+  _channelMemorySystemPrompt(isZh) {
+    return isZh
+      ? [
+        "This feature is available in English only.",
+        "This feature is available in English only.",
+        "This feature is available in English only.",
+        "This feature is available in English only.",
+        "This feature is available in English only.",
+      ].join("\n")
+      : [
+        "Compress the channel transcript Truth into searchable long-term memory.",
+        "Output 1 to 3 clean short facts separated by semicolons; each fact must state who did what, what was decided, or what state changed.",
+        "If existing channel memory is provided, merge and rewrite it with the current channel content, cleaning old ids, vague subjects, and messy summaries.",
+        "Use the display names from the input. Do not keep sender ids, chat logs, headings, bullets, mood, vague subjects, or generic group references.",
+        "If there is no durable searchable value, output NO_MEMORY.",
+      ].join("\n");
+  }
+
+  _normalizeChannelMemorySummary(rawSummary) {
+    return String(rawSummary || "")
+      .trim()
+      .replace(/^```(?:\w+)?\s*/u, "")
+      .replace(/\s*```$/u, "")
+      .trim();
+  }
+
+  _isEmptyChannelMemorySummary(summaryText) {
+    const normalized = String(summaryText || "").trim().toUpperCase();
+    return !normalized || normalized === "NO_MEMORY" || normalized === "This feature is available in English only.";
+  }
+
+  _getPreviousChannelMemoryFacts(factStore, sessionId) {
+    if (typeof factStore?.getBySession !== "function") {
+      return [];
+    }
+    return factStore.getBySession(sessionId) || [];
+  }
+
+  _clearPreviousChannelMemoryFacts(factStore, sessionId, previousFacts = null) {
+    if (typeof factStore?.delete !== "function") {
+      return;
+    }
+    const facts = Array.isArray(previousFacts)
+      ? previousFacts
+      : this._getPreviousChannelMemoryFacts(factStore, sessionId);
+    for (const fact of facts) {
+      if (fact?.id != null) factStore.delete(fact.id);
+    }
+  }
+
+  _formatChannelMemoryPromptContent(channelName, contextText, previousFacts, isZh) {
+    const previousText = previousFacts
+      .map(fact => String(fact?.fact || "").trim())
+      .filter(Boolean)
+      .join("\n");
+    const clippedContext = contextText.slice(0, 3000);
+    const clippedPrevious = previousText.slice(0, 2000);
+    if (isZh) {
+      return [
+        "This feature is available in English only.",
+        "This feature is available in English only.",
+        clippedPrevious || "This feature is available in English only.",
+        "This feature is available in English only.",
+        clippedContext,
+      ].join("\n");
+    }
+    return [
+      `Channel #${channelName}`,
+      "Existing channel memory (may contain old ids or messy summaries; clean and merge it):",
+      clippedPrevious || "(none)",
+      "Current channel content:",
+      clippedContext,
+    ].join("\n");
+  }
+
+     
+           
+                                        
+     
+  async _memorySummarize(agentId, channelName, payload) {
+    const engine = this._engine;
+    let factStore = null;
+    let needClose = false;
+    try {
+                                       
+      const agentInstance = this._getAgentInstance(agentId);
+      const memoryMasterOn = this._resolveMemoryMasterEnabled(agentId, { agentInstance });
+      if (!memoryMasterOn) {
+        log.log("This feature is available in English only.");
+        return;
+      }
+
+      const utilCfg = await engine.resolveUtilityConfigFresh({ agentId }) || {};
+      const execution = callTextConfigFromUtilityConfig(utilCfg);
+      if (!execution.model || !execution.baseUrl || !execution.api) {
+        log.log("This feature is available in English only.");
+        return;
+      }
+
+      const isZhMem = getLocale().startsWith("zh");
+      const contextText = this._formatChannelMemoryContext(agentId, payload, isZhMem);
+      if (!contextText.trim()) return;
+
+                              
+      const sessionId = `channel-${channelName}`;
+
+      if (agentInstance?.factStore) {
+        factStore = agentInstance.factStore;
+      } else {
+        const { FactStore } = await import("../lib/memory/fact-store.ts");
+        const dbPath = path.join(engine.agentsDir, agentId, "memory", "facts.db");
+        factStore = new FactStore(dbPath);
+        needClose = true;
+      }
+
+      const previousFacts = this._getPreviousChannelMemoryFacts(factStore, sessionId);
+      const rawSummary = await (callText as any)({
+        ...execution,
+        systemPrompt: this._channelMemorySystemPrompt(isZhMem),
+        messages: [{
+          role: "user",
+          content: this._formatChannelMemoryPromptContent(channelName, contextText, previousFacts, isZhMem),
+        }],
+        temperature: 0.3,
+        maxTokens: 200,
+        usageLedger: engine.usageLedger,
+        usageContext: {
+          source: {
+            subsystem: "memory",
+            operation: "channel_memory_summary",
+            surface: "channel",
+            trigger: "scheduled",
+          },
+          attribution: {
+            kind: "memory",
+            agentId,
+          },
+        },
+      });
+      const summaryText = this._normalizeChannelMemorySummary(rawSummary);
+
+      const now = new Date();
+      this._clearPreviousChannelMemoryFacts(factStore, sessionId, previousFacts);
+      if (this._isEmptyChannelMemorySummary(summaryText)) {
+        log.log(`${agentId} memory cleared/no durable summary (#${channelName})`);
+        return;
+      }
+      factStore.add({
+        fact: `[#${channelName}] ${summaryText}`,
+        tags: [isZhMem ? "This feature is available in English only." : "channel", channelName],
+        time: now.toISOString().slice(0, 16),
+        session_id: sessionId,
+      });
+
+      log.log(`${agentId} memory saved (#${channelName}, ${summaryText.length} chars)`);
+    } catch (err) {
+      log.error("This feature is available in English only.");
+    } finally {
+      if (needClose) factStore?.close?.();
+    }
+  }
+}

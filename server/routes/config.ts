@@ -1,0 +1,864 @@
+
+import fs from "fs/promises";
+import path from "path";
+import { Hono } from "hono";
+import { emitAppEvent } from "../app-events.ts";
+import { safeJson } from "../hono-helpers.ts";
+import { t } from "../../lib/i18n.ts";
+import { debugLog } from "../../lib/debug-log.ts";
+import { getRawConfig, clearConfigCache } from "../../lib/memory/config-loader.ts";
+import { FactStore } from "../../lib/memory/fact-store.ts";
+import {
+  clearCompiledMemoryArtifacts,
+  clearCompiledSummarySources,
+  writeCompiledResetMarker,
+} from "../../lib/memory/compiled-memory-state.ts";
+import {
+  buildCompiledMemoryMarkdown,
+  listWeekDayEntries,
+  migrateLegacyEditableFacts,
+  readCompiledMemorySections,
+  writeEditableFactsSection,
+  writeLongtermSection,
+  writeTodaySection,
+  writeWeekDayEntry,
+} from "../../lib/memory/compile.ts";
+import {
+  readPinnedMemoryItems,
+  replacePinnedMemoryItems,
+} from "../../lib/memory/pinned-memory-store.ts";
+import {
+  ensureDefaultWorkspace,
+  resolveDefaultWorkspacePath,
+} from "../../shared/default-workspace.ts";
+import { splitByScope, injectGlobalFields } from '../../shared/config-scope.ts';
+import {
+  clearWorkspaceHistory,
+  mergeWorkspaceHistory,
+  normalizeWorkspacePath,
+  removeWorkspaceHistoryEntries,
+} from "../../shared/workspace-history.ts";
+import { pruneMissingWorkspaceConfig } from "../../shared/workspace-persistence-gc.ts";
+import {
+  collectProviderHeaderSecretPatchPathsFromConfig,
+  maskProviderHeaders,
+  resolveProviderHeadersPatch,
+} from "../../shared/provider-auth.ts";
+import { isSearchApiProvider, normalizeSearchApiKeys } from "../../shared/search-providers.ts";
+import { resolveAgent, resolveAgentStrict, AgentNotFoundError } from "../utils/resolve-agent.ts";
+import { formatSkillsForPrompt } from "../../lib/pi-sdk/index.ts";
+import {
+  buildInlineProviderCredentialUpdate,
+  clearInlineProviderCredentialFields,
+  hasInlineProviderCredentialPatch,
+} from "./provider-credentials.ts";
+import {
+  collectSecretPatchPaths,
+  isMaskedSecretValue,
+  maskObjectSecrets,
+  maskSecretValue,
+  resolveSecretPatch,
+} from "../../shared/secret-custody.ts";
+import { denySecretMutationWithoutScope, denyWithoutScope } from "../http/capability-guard.ts";
+import { recordSecurityAuditEvent } from "../http/security-audit.ts";
+import { readUserProfile, writeUserProfile } from "../../lib/user-profile-store.ts";
+
+function hasOwn(value: any, key: string) {
+  return !!value && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function hasProviderMutationPatch(partial: any) {
+  if (!partial || typeof partial !== "object") return false;
+  if (hasOwn(partial, "providers")) return true;
+  return ["api", "embedding_api", "utility_api"].some((key) => hasInlineProviderCredentialPatch(partial[key]));
+}
+
+function getGlobalValue(globalFields: any[], key: string) {
+  return globalFields.find((field) => field.key === key)?.value;
+}
+
+function emitConfigAppEvents(engine: any, { globalFields, agentPartial, providersChanged }: any) {
+  const agentId = engine.currentAgentId || null;
+  if (
+    providersChanged
+    || hasOwn(agentPartial, "api")
+    || hasOwn(agentPartial, "embedding_api")
+    || hasOwn(agentPartial, "utility_api")
+    || hasOwn(agentPartial, "models")
+  ) {
+    emitAppEvent(engine, "models-changed", { agentId });
+  }
+
+  const locale = getGlobalValue(globalFields, "locale");
+  if (locale !== undefined) {
+    emitAppEvent(engine, "locale-changed", { locale });
+  }
+
+  const editor = getGlobalValue(globalFields, "editor");
+  if (editor !== undefined) {
+    emitAppEvent(engine, "editor-typography-changed", {
+      editor: typeof engine.getEditor === "function" ? engine.getEditor() : editor,
+    });
+  }
+
+  const networkProxy = getGlobalValue(globalFields, "network_proxy");
+  if (networkProxy !== undefined) {
+    emitAppEvent(engine, "network-proxy-changed", {
+      network_proxy: typeof engine.getNetworkProxy === "function" ? engine.getNetworkProxy() : networkProxy,
+    });
+  }
+
+  const keepAwake = getGlobalValue(globalFields, "keep_awake");
+  if (keepAwake !== undefined) {
+    emitAppEvent(engine, "keep-awake-changed", {
+      keep_awake: typeof engine.getKeepAwake === "function" ? engine.getKeepAwake() : keepAwake === true,
+    });
+  }
+}
+
+function latestIso(values: any[]) {
+  let latest = null;
+  let latestTime = -Infinity;
+  for (const value of values) {
+    if (typeof value !== "string" || !value) continue;
+    const time = Date.parse(value);
+    if (Number.isNaN(time)) continue;
+    if (time > latestTime) {
+      latest = value;
+      latestTime = time;
+    }
+  }
+  return latest;
+}
+
+function normalizeMemoryStepHealth(step: any) {
+  const failCount = Number(step?.failCount);
+  return {
+    lastSuccessAt: typeof step?.lastSuccessAt === "string" ? step.lastSuccessAt : null,
+    lastErrorAt: typeof step?.lastErrorAt === "string" ? step.lastErrorAt : null,
+    lastErrorMsg: step?.lastErrorMsg ? String(step.lastErrorMsg) : null,
+    failCount: Number.isFinite(failCount) && failCount > 0 ? failCount : 0,
+  };
+}
+
+function buildMemoryHealth(agent: any) {
+  const base = {
+    enabled: agent.memoryMasterEnabled !== false,
+    reason: null,
+    steps: {},
+    failedSteps: [],
+    maxFailCount: 0,
+    lastSuccessAt: null,
+    lastErrorAt: null,
+  };
+
+  if (agent.memoryMasterEnabled === false) {
+    return {
+      ...base,
+      status: "disabled",
+      reason: "memory_disabled",
+      enabled: false,
+    };
+  }
+
+  if (!agent.memoryTicker || typeof agent.memoryTicker.getHealthStatus !== "function") {
+    return {
+      ...base,
+      status: "unavailable",
+      reason: "memory_ticker_unavailable",
+    };
+  }
+
+  const rawSteps = agent.memoryTicker.getHealthStatus();
+  const steps: Record<string, any> = {};
+  for (const [key, value] of Object.entries(rawSteps || {})) {
+    steps[key] = normalizeMemoryStepHealth(value);
+  }
+
+  const stepEntries = Object.entries(steps);
+  const failedSteps = stepEntries
+    .filter(([, step]) => step.failCount > 0 || !!step.lastErrorMsg || !!step.lastErrorAt)
+    .map(([key]) => key);
+  const maxFailCount = stepEntries.reduce((max, [, step]) => Math.max(max, step.failCount), 0);
+  const status = failedSteps.length === 0 ? "healthy" : (maxFailCount >= 3 ? "unhealthy" : "degraded");
+
+  return {
+    ...base,
+    status,
+    steps,
+    failedSteps,
+    maxFailCount,
+    lastSuccessAt: latestIso(stepEntries.map(([, step]) => step.lastSuccessAt)),
+    lastErrorAt: latestIso(stepEntries.map(([, step]) => step.lastErrorAt)),
+  };
+}
+
+export function createConfigRoute(engine: any) {
+  const route = new Hono();
+
+  
+  route.get("/config", async (c) => {
+    try {
+      await gcConfigWorkspacePersistence(engine);
+      const config = { ...engine.config };
+      const raw = getRawConfig(engine.configPath) || {};
+
+      
+      config._raw = {
+        api: { provider: raw.api?.provider || "", base_url: raw.api?.base_url || "" },
+        embedding_api: { provider: raw.embedding_api?.provider || "", base_url: raw.embedding_api?.base_url || "" },
+        utility_api: { provider: raw.utility_api?.provider || "", base_url: raw.utility_api?.base_url || "" },
+      };
+
+      
+      const rawProviders = engine.providerRegistry.getAllProvidersRaw();
+      const providerEntries: Record<string, any> = {};
+      for (const [name, p] of Object.entries(rawProviders) as [string, any][]) {
+        const entry = engine.providerRegistry.get(name);
+        providerEntries[name] = {
+          base_url: p.base_url || entry?.baseUrl || "",
+          api: p.api || entry?.api || "",
+          api_key: maskSecretValue(p.api_key || ""),
+          headers: maskProviderHeaders(p.headers || {}),
+          models: p.models || [],
+          model_count: (p.models || []).length,
+        };
+      }
+      config.providers = providerEntries;
+
+      
+      injectGlobalFields(config, engine);
+      return c.json(maskObjectSecrets(config));
+    } catch (err) {
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  route.post("/config/workspaces/recent", async (c) => {
+    try {
+      const body = await safeJson(c);
+      const folder = normalizeWorkspacePath(body?.path);
+      if (!folder) return c.json({ error: "path must be a non-empty string" }, 400);
+      const stat = await fs.stat(folder).catch(() => null);
+      if (!stat?.isDirectory()) return c.json({ error: "path must be an existing directory" }, 400);
+      const cwdHistory = mergeWorkspaceHistory(engine.config.cwd_history, [folder]);
+      await engine.updateConfig({ cwd_history: cwdHistory });
+      return c.json({ ok: true, cwd_history: cwdHistory });
+    } catch (err) {
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  route.delete("/config/workspaces/recent", async (c) => {
+    try {
+      const body = await safeJson(c).catch(() => ({}));
+      const folder = normalizeWorkspacePath(body?.path);
+      if (!folder) return c.json({ error: "path must be a non-empty string" }, 400);
+      const cwdHistory = removeWorkspaceHistoryEntries(engine.config.cwd_history, [folder]);
+      await engine.updateConfig({ cwd_history: cwdHistory });
+      return c.json({ ok: true, cwd_history: cwdHistory });
+    } catch (err) {
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  route.delete("/config/workspaces/recent/all", async (c) => {
+    try {
+      const cwdHistory = clearWorkspaceHistory();
+      await engine.updateConfig({ cwd_history: cwdHistory });
+      return c.json({ ok: true, cwd_history: cwdHistory });
+    } catch (err) {
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  route.get("/config/default-workspace", async (c) => {
+    return c.json({ path: resolveDefaultWorkspacePath() });
+  });
+
+  route.post("/config/default-workspace", async (c) => {
+    try {
+      return c.json({ ok: true, path: ensureDefaultWorkspace() });
+    } catch (err) {
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  
+  route.put("/config", async (c) => {
+    try {
+      const partial = await safeJson(c);
+      if (!partial || typeof partial !== "object") {
+        return c.json({ error: t("error.invalidJson") }, 400);
+      }
+      const settingsDenied = denyWithoutScope(c, "settings.write");
+      if (settingsDenied) return settingsDenied;
+      if (hasProviderMutationPatch(partial)) {
+        const providerDenied = denyWithoutScope(c, "providers.manage");
+        if (providerDenied) return providerDenied;
+      }
+      const secretFields = [
+        ...collectSecretPatchPaths(partial, ["api_key"] as any),
+        ...collectProviderHeaderSecretPatchPathsFromConfig(partial),
+      ];
+      const secretDenied = denySecretMutationWithoutScope(c, secretFields);
+      if (secretDenied) return secretDenied;
+      
+      const { global: globalFields, agent: agentPartial } = splitByScope(partial) as { global: any[], agent: Record<string, any> };
+      for (const { setter, value } of globalFields) {
+        engine[setter](value);
+      }
+
+      
+      let providersChanged = false;
+      if (agentPartial.providers) {
+        const rawProviders = engine.providerRegistry.getAllProvidersRaw?.() || {};
+        for (const [name, data] of Object.entries(agentPartial.providers)) {
+          if (data === null) {
+            engine.providerRegistry.removeProvider(name);
+          } else {
+            const resolvedPatch = resolveSecretPatch({
+              patch: data,
+              existing: rawProviders[name] || {},
+              secretKeys: ["api_key"] as any,
+            });
+            if (hasOwn(data as any, "headers")) {
+              (resolvedPatch as any).headers = resolveProviderHeadersPatch({
+                patch: (data as any).headers,
+                existing: rawProviders[name]?.headers || {},
+              } as any);
+            }
+            engine.providerRegistry.saveProvider(name, resolvedPatch);
+          }
+        }
+        delete agentPartial.providers;
+        providersChanged = true;
+      }
+
+      
+      const rawConfig = getRawConfig(engine.configPath) || {};
+      for (const blockName of ["api", "embedding_api", "utility_api"]) {
+        const block = agentPartial[blockName];
+        if (hasInlineProviderCredentialPatch(block)) {
+          const { provider: provName, update: provUpdate } = buildInlineProviderCredentialUpdate(
+            block,
+            rawConfig?.[blockName]?.provider || "",
+            (provider) => engine.providerRegistry?.getAllProvidersRaw?.()?.[provider] || {},
+          );
+          if (!provName) {
+            return c.json({ error: `${blockName}.provider is required when saving credentials` }, 400);
+          }
+          engine.providerRegistry.saveProvider(provName, provUpdate);
+          clearInlineProviderCredentialFields(block);
+          providersChanged = true;
+        }
+      }
+
+      
+      if (providersChanged) {
+        await engine.onProviderChanged();
+        debugLog()?.log("api", `onProviderChanged OK after provider change (${engine.availableModels?.length ?? 0} models)`);
+      }
+
+      if (providersChanged && Object.keys(agentPartial).length === 0) {
+        clearConfigCache(undefined as any);
+        await engine.updateConfig({});
+        emitConfigAppEvents(engine, { globalFields, agentPartial, providersChanged });
+        recordSecurityAuditEvent(c, engine, {
+          action: "settings.config.update",
+          target: "config",
+          secretFields,
+        } as any);
+        return c.json({ ok: true });
+      }
+
+      if (Object.keys(agentPartial).length === 0) {
+        emitConfigAppEvents(engine, { globalFields, agentPartial, providersChanged });
+        recordSecurityAuditEvent(c, engine, {
+          action: "settings.config.update",
+          target: "config",
+          secretFields,
+        } as any);
+        return c.json({ ok: true });
+      }
+      debugLog()?.log("api", `PUT /api/config keys=[${Object.keys(agentPartial).join(",")}]`);
+      if (providersChanged) clearConfigCache(undefined as any);
+      await engine.updateConfig(agentPartial);
+      emitConfigAppEvents(engine, { globalFields, agentPartial, providersChanged });
+      recordSecurityAuditEvent(c, engine, {
+        action: "settings.config.update",
+        target: "config",
+        secretFields,
+      } as any);
+      return c.json({ ok: true });
+    } catch (err) {
+      debugLog()?.error("api", `PUT /api/config failed: ${err.message}`);
+      return c.json({ error: err.message }, err.statusCode || 500);
+    }
+  });
+
+  
+  
+  
+
+  route.get("/system-prompt", async (c) => {
+    try {
+      const agent = resolveAgent(engine, c);
+      let content = agent.systemPrompt || "";
+      const enabledSkills = agent.enabledSkills || [];
+      if (enabledSkills.length > 0) {
+        content += formatSkillsForPrompt(enabledSkills);
+      }
+      return c.json({ content });
+    } catch (err) {
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  
+
+  
+  route.get("/ishiki", async (c) => {
+    try {
+      const ishikiPath = path.join(resolveAgent(engine, c).agentDir, "ishiki.md");
+      const content = await fs.readFile(ishikiPath, "utf-8");
+      return c.json({ content });
+    } catch (err) {
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  
+  route.put("/ishiki", async (c) => {
+    try {
+      const body = await safeJson(c);
+      const { content } = body;
+      if (typeof content !== "string") {
+        return c.json({ error: "content must be a string" }, 400);
+      }
+      const agent = resolveAgentStrict(engine, c);
+      const ishikiPath = path.join(agent.agentDir, "ishiki.md");
+      await fs.writeFile(ishikiPath, content, "utf-8");
+      debugLog()?.log("api", `PUT /api/ishiki (saved, ${content.length} chars)`);
+      
+      await engine.updateConfig({}, { agentId: agent.id, refreshDescription: true });
+      return c.json({ ok: true });
+    } catch (err) {
+      if (err instanceof AgentNotFoundError) return c.json({ error: err.message }, 404);
+      debugLog()?.error("api", `PUT /api/ishiki failed: ${err.message}`);
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  
+
+  route.get("/identity", async (c) => {
+    try {
+      const identityPath = path.join(resolveAgent(engine, c).agentDir, "identity.md");
+      const content = await fs.readFile(identityPath, "utf-8");
+      return c.json({ content });
+    } catch (err) {
+      if (err.code === "ENOENT") return c.json({ content: "" });
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  route.put("/identity", async (c) => {
+    try {
+      const body = await safeJson(c);
+      const { content } = body;
+      if (typeof content !== "string") {
+        return c.json({ error: "content must be a string" }, 400);
+      }
+      const agent = resolveAgentStrict(engine, c);
+      const identityPath = path.join(agent.agentDir, "identity.md");
+      await fs.writeFile(identityPath, content, "utf-8");
+      debugLog()?.log("api", `PUT /api/identity (saved, ${content.length} chars)`);
+      await engine.updateConfig({}, { agentId: agent.id, refreshDescription: true });
+      return c.json({ ok: true });
+    } catch (err) {
+      if (err instanceof AgentNotFoundError) return c.json({ error: err.message }, 404);
+      debugLog()?.error("api", `PUT /api/identity failed: ${err.message}`);
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  
+
+  
+  route.get("/user-profile", async (c) => {
+    try {
+      const content = await readUserProfile(engine.userDir);
+      return c.json({ content });
+    } catch (err) {
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  
+  route.put("/user-profile", async (c) => {
+    try {
+      const body = await safeJson(c);
+      const { content } = body;
+      if (typeof content !== "string") {
+        return c.json({ error: "content must be a string" }, 400);
+      }
+      await writeUserProfile(engine.userDir, content);
+      debugLog()?.log("api", `PUT /api/user-profile (saved, ${content.length} chars)`);
+      await engine.updateConfig({});
+      return c.json({ ok: true });
+    } catch (err) {
+      debugLog()?.error("api", `PUT /api/user-profile failed: ${err.message}`);
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  
+
+  
+  route.get("/pinned", async (c) => {
+    try {
+      const pins = readPinnedMemoryItems(resolveAgent(engine, c).agentDir)
+        .map(item => item.content);
+      return c.json({ pins });
+    } catch (err) {
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  
+  route.put("/pinned", async (c) => {
+    try {
+      const body = await safeJson(c);
+      const { pins } = body;
+      if (!Array.isArray(pins)) {
+        return c.json({ error: "pins must be an array" }, 400);
+      }
+      const agent = resolveAgentStrict(engine, c);
+      replacePinnedMemoryItems(agent.agentDir, pins.filter(p => typeof p === "string"));
+      debugLog()?.log("api", `PUT /api/pinned (${pins.length} items)`);
+      
+      await engine.updateConfig({}, { agentId: agent.id });
+      return c.json({ ok: true });
+    } catch (err) {
+      if (err instanceof AgentNotFoundError) return c.json({ error: err.message }, 404);
+      debugLog()?.error("api", `PUT /api/pinned failed: ${err.message}`);
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  
+
+  
+  function getStoreForAgent(agentId: string) {
+    if (!agentId) throw new Error("agentId is required");
+    const resolvedId = agentId;
+    const agent = engine.getAgent(resolvedId);
+    if (agent?.factStore) {
+      return { store: agent.factStore, isTemp: false };
+    }
+    if (/[\/\\.]/.test(resolvedId)) throw new Error("Invalid agent ID");
+    const dbPath = path.join(engine.agentsDir, resolvedId, "memory", "facts.db");
+    try {
+      const store = new FactStore(dbPath);
+      return { store, isTemp: true };
+    } catch (err) {
+      throw new Error(`Cannot open fact DB for agent "${resolvedId}": ${err.message}`);
+    }
+  }
+
+  
+  route.get("/memories/health", async (c) => {
+    try {
+      const agent = resolveAgentStrict(engine, c);
+      return c.json({
+        agentId: agent.id,
+        ...buildMemoryHealth(agent),
+      });
+    } catch (err) {
+      if (err instanceof AgentNotFoundError) return c.json({ error: err.message }, 404);
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  
+  route.get("/memories", async (c) => {
+    let tempStore = null;
+    try {
+      const { store, isTemp } = getStoreForAgent(c.req.query("agentId"));
+      if (isTemp) tempStore = store;
+      return c.json({ memories: store.exportAll() });
+    } catch (err) {
+      return c.json({ error: err.message }, 500);
+    } finally {
+      tempStore?.close();
+    }
+  });
+
+  
+  route.get("/memories/compiled", async (c) => {
+    try {
+      const agent = resolveAgent(engine, c);
+      const memDir = path.dirname(agent.memoryMdPath);
+      
+      
+      migrateLegacyEditableFacts(memDir);
+      const sections = readCompiledMemorySections(memDir, {
+        summaryManager: agent.summaryManager,
+      });
+      const content = buildCompiledMemoryMarkdown(sections);
+      
+      
+      return c.json({ content, editableFactsEnabled: true, sections });
+    } catch (err) {
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  route.put("/memories/compiled/facts", async (c) => {
+    try {
+      const denied = denyWithoutScope(c, "settings.write");
+      if (denied) return denied;
+      const agent = resolveAgentStrict(engine, c);
+      const body = await safeJson(c);
+      if (typeof body?.facts !== "string") {
+        return c.json({ error: "facts must be a string" }, 400);
+      }
+      const memDir = path.dirname(agent.memoryMdPath);
+      migrateLegacyEditableFacts(memDir);
+      const normalizedFacts = writeEditableFactsSection(memDir, body.facts, {
+        summaryManager: agent.summaryManager,
+        memoryMdPath: agent.memoryMdPath,
+      });
+      debugLog()?.log("api", `PUT /api/memories/compiled/facts agent=${agent.id}`);
+      await engine.updateConfig({}, { agentId: agent.id });
+      return c.json({ ok: true, facts: normalizedFacts });
+    } catch (err) {
+      if (err instanceof AgentNotFoundError) return c.json({ error: err.message }, 404);
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  route.put("/memories/compiled/today", async (c) => {
+    try {
+      const denied = denyWithoutScope(c, "settings.write");
+      if (denied) return denied;
+      const agent = resolveAgentStrict(engine, c);
+      const body = await safeJson(c);
+      if (typeof body?.today !== "string") {
+        return c.json({ error: "today must be a string" }, 400);
+      }
+      const memDir = path.dirname(agent.memoryMdPath);
+      const normalizedToday = writeTodaySection(memDir, body.today, {
+        memoryMdPath: agent.memoryMdPath,
+      });
+      debugLog()?.log("api", `PUT /api/memories/compiled/today agent=${agent.id}`);
+      await engine.updateConfig({}, { agentId: agent.id });
+      return c.json({ ok: true, today: normalizedToday });
+    } catch (err) {
+      if (err instanceof AgentNotFoundError) return c.json({ error: err.message }, 404);
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  route.put("/memories/compiled/longterm", async (c) => {
+    try {
+      const denied = denyWithoutScope(c, "settings.write");
+      if (denied) return denied;
+      const agent = resolveAgentStrict(engine, c);
+      const body = await safeJson(c);
+      if (typeof body?.longterm !== "string") {
+        return c.json({ error: "longterm must be a string" }, 400);
+      }
+      const memDir = path.dirname(agent.memoryMdPath);
+      const normalizedLongterm = writeLongtermSection(memDir, body.longterm, {
+        memoryMdPath: agent.memoryMdPath,
+      });
+      debugLog()?.log("api", `PUT /api/memories/compiled/longterm agent=${agent.id}`);
+      await engine.updateConfig({}, { agentId: agent.id });
+      return c.json({ ok: true, longterm: normalizedLongterm });
+    } catch (err) {
+      if (err instanceof AgentNotFoundError) return c.json({ error: err.message }, 404);
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  
+  route.get("/memories/compiled/week/days", async (c) => {
+    try {
+      const agent = resolveAgent(engine, c);
+      const memDir = path.dirname(agent.memoryMdPath);
+      const days = listWeekDayEntries(memDir);
+      return c.json({ days });
+    } catch (err) {
+      if (err instanceof AgentNotFoundError) return c.json({ error: err.message }, 404);
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  
+  route.put("/memories/compiled/week/days/:date", async (c) => {
+    try {
+      const denied = denyWithoutScope(c, "settings.write");
+      if (denied) return denied;
+      const agent = resolveAgentStrict(engine, c);
+      const date = c.req.param("date");
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date || "")) {
+        return c.json({ error: "date must be YYYY-MM-DD" }, 400);
+      }
+      const body = await safeJson(c);
+      if (typeof body?.body !== "string") {
+        return c.json({ error: "body must be a string" }, 400);
+      }
+      const memDir = path.dirname(agent.memoryMdPath);
+      const existingDates = new Set(listWeekDayEntries(memDir).map((entry) => entry.date));
+      if (!existingDates.has(date)) {
+        return c.json({ error: `no daily entry for date "${date}"` }, 404);
+      }
+      const normalizedBody = writeWeekDayEntry(memDir, date, body.body, {
+        memoryMdPath: agent.memoryMdPath,
+      });
+      debugLog()?.log("api", `PUT /api/memories/compiled/week/days/${date} agent=${agent.id}`);
+      await engine.updateConfig({}, { agentId: agent.id });
+      return c.json({ ok: true, date, body: normalizedBody });
+    } catch (err) {
+      if (err instanceof AgentNotFoundError) return c.json({ error: err.message }, 404);
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  
+  route.delete("/memories/compiled", async (c) => {
+    try {
+      const agent = resolveAgentStrict(engine, c);
+      const memDir = path.dirname(agent.memoryMdPath);
+      writeCompiledResetMarker(memDir);
+      clearCompiledMemoryArtifacts(memDir);
+      clearCompiledSummarySources(agent.summariesDir, agent.summaryManager);
+      debugLog()?.log("api", `DELETE /api/memories/compiled agent=${agent.id}`);
+      await engine.updateConfig({}, { agentId: agent.id });
+      return c.json({ ok: true });
+    } catch (err) {
+      if (err instanceof AgentNotFoundError) return c.json({ error: err.message }, 404);
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  
+  route.delete("/memories", async (c) => {
+    let tempStore = null;
+    try {
+      const agent = resolveAgentStrict(engine, c);
+      const { store, isTemp } = getStoreForAgent(agent.id);
+      if (isTemp) tempStore = store;
+      const memDir = path.dirname(agent.memoryMdPath);
+      writeCompiledResetMarker(memDir);
+      store.clearAll();
+      clearCompiledMemoryArtifacts(memDir);
+      clearCompiledSummarySources(agent.summariesDir, agent.summaryManager);
+      debugLog()?.log("api", `DELETE /api/memories agent=${agent.id}`);
+      await engine.updateConfig({}, { agentId: agent.id });
+      return c.json({ ok: true });
+    } catch (err) {
+      if (err instanceof AgentNotFoundError) return c.json({ error: err.message }, 404);
+      return c.json({ error: err.message }, 500);
+    } finally {
+      tempStore?.close();
+    }
+  });
+
+  
+  route.get("/memories/export", async (c) => {
+    let tempStore = null;
+    try {
+      const { store, isTemp } = getStoreForAgent(c.req.query("agentId"));
+      if (isTemp) tempStore = store;
+      return c.json({
+        version: 2,
+        exportedAt: new Date().toISOString(),
+        facts: store.exportAll(),
+      });
+    } catch (err) {
+      return c.json({ error: err.message }, 500);
+    } finally {
+      tempStore?.close();
+    }
+  });
+
+  
+  route.post("/memories/import", async (c) => {
+    let tempStore = null;
+    try {
+      const body = await safeJson(c);
+      const { facts, memories } = body;
+      
+      const entries = facts || memories;
+      if (!Array.isArray(entries) || entries.length === 0) {
+        return c.json({ error: "facts must be a non-empty array" }, 400);
+      }
+
+      const importEntries = entries.map((e) => ({
+        fact: e.fact || e.content || "",
+        tags: e.tags || [],
+        time: e.time || e.date || null,
+        session_id: e.session_id || "imported",
+      }));
+
+      const { store, isTemp } = getStoreForAgent(c.req.query("agentId"));
+      if (isTemp) tempStore = store;
+      store.importAll(importEntries);
+      debugLog()?.log("api", `POST /api/memories/import: ${importEntries.length} entries`);
+      return c.json({ ok: true, imported: importEntries.length });
+    } catch (err) {
+      return c.json({ error: err.message }, 500);
+    } finally {
+      tempStore?.close();
+    }
+  });
+
+  
+
+  route.post("/search/verify", async (c) => {
+    const body = await safeJson(c);
+    const { provider } = body;
+    const selectedProvider = body.search_provider || provider;
+    if (!provider) {
+      return c.json({ ok: false, error: "provider is required" }, 400);
+    }
+    const existingSearch = engine.getSearchConfig?.() || {};
+    const api_key = isMaskedSecretValue(body.api_key)
+      ? existingSearch.api_keys?.[provider] || existingSearch.api_key || ""
+      : body.api_key || "";
+    try {
+      const { searchProviderRequiresApiKey, verifySearchKey } = await import("../../lib/tools/web-search.ts");
+      if (searchProviderRequiresApiKey(provider) && !api_key) {
+        return c.json({ ok: false, error: "api_key is required" }, 400);
+      }
+      await verifySearchKey(provider, api_key);
+      const storedApiKey = searchProviderRequiresApiKey(provider) ? api_key : "";
+      const apiKeys = normalizeSearchApiKeys(existingSearch.api_keys || {});
+      if (isSearchApiProvider(provider)) apiKeys[provider] = storedApiKey;
+      const selectedApiKey = isSearchApiProvider(selectedProvider) ? apiKeys[selectedProvider] || "" : "";
+      engine.setSearchConfig({ provider: selectedProvider, api_key: selectedApiKey, api_keys: apiKeys });
+      await engine.updateConfig({ search: { provider: selectedProvider, api_key: selectedApiKey, api_keys: apiKeys } });
+      debugLog()?.log("api", `POST /api/search/verify provider=${provider} selected=${selectedProvider} (ok)`);
+      return c.json({ ok: true });
+    } catch (err) {
+      debugLog()?.warn("api", `POST /api/search/verify provider=${provider} failed: ${err.message}`);
+      return c.json({ ok: false, error: err.message });
+    }
+  });
+
+  return route;
+}
+
+async function gcConfigWorkspacePersistence(engine: any) {
+  if (typeof engine.gcWorkspacePersistence === "function") {
+    await engine.gcWorkspacePersistence({ agentId: engine.currentAgentId || undefined });
+    return;
+  }
+  const result = pruneMissingWorkspaceConfig(engine.config || {});
+  if (result.changed && typeof engine.updateConfig === "function") {
+    await engine.updateConfig(result.patch);
+  }
+}

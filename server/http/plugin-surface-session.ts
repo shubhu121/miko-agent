@@ -1,0 +1,60 @@
+import { normalizePrincipal } from "../../core/security-principal.ts";
+import {
+  PluginSurfaceSessionError,
+  verifyPluginSurfaceSession,
+} from "../../core/plugin-surface-session-service.ts";
+import {
+  PLUGIN_SURFACE_SESSION_HEADER,
+  PLUGIN_SURFACE_SESSION_QUERY,
+} from "../../packages/plugin-protocol/src/index.ts";
+
+export { PluginSurfaceSessionError };
+export { PLUGIN_SURFACE_SESSION_HEADER, PLUGIN_SURFACE_SESSION_QUERY };
+
+const CONNECTION_TRUST_STATES = Object.freeze({
+  local: "local",
+  lan: "lan",
+  custom_remote: "tunnel",
+});
+
+
+export function authenticatePluginSurfaceRequest(c, engine, { connectionKind = null } = {}) {
+  const routePath = new URL(c.req.url).pathname;
+  const pluginId = pluginIdFromProxyPath(routePath);
+  if (!pluginId) return null;
+  const token = c.req.header(PLUGIN_SURFACE_SESSION_HEADER)
+    || c.req.query(PLUGIN_SURFACE_SESSION_QUERY)
+    || null;
+  if (!token) return null;
+  if (!engine?.mikoHome) {
+    throw new PluginSurfaceSessionError("plugin surface session storage unavailable", {
+      code: "plugin_surface_session_unavailable",
+      status: 500,
+    });
+  }
+  const session = verifyPluginSurfaceSession({
+    mikoHome: engine.mikoHome,
+    pluginId,
+    token,
+  });
+  return normalizePrincipal({
+    kind: "plugin",
+    pluginId: session.pluginId,
+    credentialId: session.sessionId,
+    credentialKind: "plugin_surface_session",
+    connectionKind,
+    trustState: CONNECTION_TRUST_STATES[connectionKind] || "unknown",
+    scopes: [],
+  });
+}
+
+function pluginIdFromProxyPath(routePath) {
+  const match = /^\/api\/plugins\/([^/]+)\/.+$/.exec(String(routePath || ""));
+  if (!match) return null;
+  try {
+    const pluginId = decodeURIComponent(match[1]);
+    return pluginId || null;
+  } catch {
+    return null;
+  }
+}

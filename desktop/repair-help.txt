@@ -1,0 +1,7 @@
+If macOS says Miko is damaged or cannot be opened, remove the quarantine attribute in Terminal:
+
+```sh
+xattr -rd com.apple.quarantine /Applications/Miko.app
+```
+
+Only run this command for a copy of Miko you trust.

@@ -1,0 +1,58 @@
+
+
+[data-theme="absolutely"] {
+    
+    --bg:           #F4F3EE;
+    --bg-card:      #FAF9F5;
+    --bg-glass:     rgba(244, 243, 238, 0.92);
+
+    
+    --accent:       #B5846E;
+    --accent-hover: #A27460;
+    --accent-light: rgba(181, 132, 110, 0.08);
+
+    
+    --text:         #2D2B28;
+    --text-light:   #6B6864;
+    --text-muted:   #9B9793;
+
+    
+    --border:       rgba(177, 173, 161, 0.28);
+    --shadow:       rgba(45, 43, 40, 0.07);
+
+    
+    --green:        #7BAE7F;
+    --green-rgb:    123, 174, 127;
+    --coral:        #C4917E;
+
+    
+    --sidebar-bg:   #EDEAE2;
+
+    
+    --jian-note-bg:     #FAF5E9;
+    --jian-note-border: rgba(180, 160, 130, 0.15);
+
+    
+    --miko-text:    #2D2B28;
+    --mood-bg:      rgba(181, 132, 110, 0.05);
+    --mood-text:    #8C6A58;
+    --mood-border:  rgba(181, 132, 110, 0.16);
+    --tool-bg:      rgba(0, 0, 0, 0.03);
+    --tool-text:    #6B6864;
+    --user-bg:      rgba(0, 0, 0, 0.035);
+    --drop-overlay-bg: rgba(244, 243, 238, 0.85);
+    --attach-bg:    rgba(0, 0, 0, 0.04);
+
+    
+    --accent-rgb:   181, 132, 110;
+    --coral-rgb:    196, 145, 126;
+    --danger:       #8B3A3A;
+    --danger-rgb:   139, 58, 58;
+    --overlay-subtle: rgba(0, 0, 0, 0.03);
+    --overlay-light:  rgba(0, 0, 0, 0.05);
+    --overlay-medium: rgba(0, 0, 0, 0.08);
+    --overlay-strong: rgba(0, 0, 0, 0.15);
+
+    
+    --select-arrow: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%239B9793' fill='none' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+}

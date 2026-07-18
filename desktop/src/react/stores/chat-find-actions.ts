@@ -1,0 +1,115 @@
+
+import { useStore } from './index';
+import { mikoFetch } from '../hooks/use-miko-fetch';
+import { switchSession } from './session-actions';
+import { sessionScopedValue } from './session-slice';
+import type { ChatFindResults, ChatFindState } from './chat-find-slice';
+
+function translate(key: string, fallback: string): string {
+  const t = typeof window !== 'undefined' ? window.t : undefined;
+  return t?.(key) || fallback;
+}
+
+function findStateFor(path: string): ChatFindState | undefined {
+  const state = useStore.getState();
+  return sessionScopedValue(state as Record<string, any>, state.chatFindBySession, path) as ChatFindState | undefined;
+}
+
+export async function fetchSessionFind(path: string, query: string): Promise<ChatFindResults | null> {
+  try {
+    const res = await mikoFetch(
+      `/api/sessions/find?path=${encodeURIComponent(path)}&q=${encodeURIComponent(query)}`,
+    );
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      console.warn('[chat-find] find failed:', data.error || res.status);
+      return null;
+    }
+    return {
+      matches: Array.isArray(data.matches) ? data.matches : [],
+      total: Number(data.total) || 0,
+      tokens: Array.isArray(data.tokens) ? data.tokens : [],
+      truncated: data.truncated === true,
+      bestIndex: typeof data.bestIndex === 'number' ? data.bestIndex : null,
+      revision: typeof data.revision === 'string' ? data.revision : null,
+    };
+  } catch (err) {
+    console.warn('[chat-find] find request error:', err);
+    return null;
+  }
+}
+
+
+export async function runChatFind(path: string, query: string): Promise<void> {
+  const trimmed = query.trim();
+  if (!trimmed) return;
+  const results = await fetchSessionFind(path, trimmed);
+  
+  const current = findStateFor(path);
+  if (!current || !current.open || current.query.trim() !== trimmed) return;
+  if (!results) {
+    useStore.getState().setChatFindStatus(path, 'error');
+    return;
+  }
+  useStore.getState().setChatFindResults(path, results);
+  
+  if (useStore.getState().currentSessionPath !== path) return;
+  const last = results.matches[results.matches.length - 1];
+  if (last) {
+    useStore.getState().requestMessageLocate({ sessionPath: path, messageIndex: last.index, term: trimmed });
+  }
+}
+
+
+export function stepChatFind(path: string, direction: 1 | -1): void {
+  const current = findStateFor(path);
+  if (!current || current.matches.length === 0) return;
+  const count = current.matches.length;
+  const base = current.activePos < 0 ? count - 1 : current.activePos;
+  const next = (base + direction + count) % count;
+  useStore.getState().setChatFindActivePos(path, next);
+  const match = current.matches[next];
+  useStore.getState().requestMessageLocate({
+    sessionPath: path,
+    messageIndex: match.index,
+    term: current.query.trim(),
+  });
+}
+
+
+export async function locateSearchHit(path: string, query: string): Promise<void> {
+  const trimmed = query.trim();
+  if (!trimmed) {
+    await switchSession(path);
+    return;
+  }
+  const findPromise = fetchSessionFind(path, trimmed);
+  await switchSession(path);
+  if (useStore.getState().currentSessionPath !== path) return; 
+  const results = await findPromise;
+  if (!results) {
+    useStore.getState().addToast(
+      translate('chat.find.locateFailed', "This feature is available in English only."),
+      'error',
+      4000,
+    );
+    return;
+  }
+  if (results.total === 0 || results.matches.length === 0) {
+    console.warn('[chat-find] search hit but find returned empty:', path, trimmed);
+    return;
+  }
+  useStore.getState().openChatFind(path, trimmed);
+  useStore.getState().setChatFindResults(path, results);
+  const bestPos = results.bestIndex != null
+    ? results.matches.findIndex((m) => m.index === results.bestIndex)
+    : -1;
+  const exactPos = results.matches.findIndex((m) => m.exact);
+  const pos = bestPos >= 0 ? bestPos : (exactPos >= 0 ? exactPos : 0);
+  useStore.getState().setChatFindActivePos(path, pos);
+  useStore.getState().requestMessageLocate({
+    sessionPath: path,
+    messageIndex: results.matches[pos].index,
+    term: trimmed,
+  });
+}

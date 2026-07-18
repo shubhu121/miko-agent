@@ -1,0 +1,16 @@
+{
+  "name": "Miko",
+  "short_name": "Miko",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f3f8f6",
+  "theme_color": "#0c8d78",
+  "icons": [
+    {
+      "src": "./assets/miko/miko-mascot.png",
+      "sizes": "1254x1254",
+      "type": "image/png"
+    }
+  ]
+}

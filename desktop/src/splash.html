@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' file:;">
+    <title>Miko</title>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { height: 100%; overflow: hidden; }
+        body {
+            font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #103F36;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            -webkit-font-smoothing: antialiased;
+            -webkit-app-region: drag;
+            animation: fadeIn 0.3s ease-out;
+        }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+        .splash-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 1.5rem;
+        }
+        .splash-avatar {
+            width: 72px; height: 72px;
+            border-radius: 28%;
+            object-fit: contain;
+            filter: drop-shadow(0 12px 18px rgba(0, 0, 0, 0.2));
+            pointer-events: none;
+            user-select: none;
+        }
+        .splash-text-row {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            justify-content: center;
+        }
+        .splash-text {
+            font-size: 0.82rem;
+            color: #B6D5CC;
+            letter-spacing: 0.02em;
+            line-height: 1.5;
+            transition: opacity 0.5s ease;
+            white-space: nowrap;
+        }
+        .splash-text.switching { opacity: 0; }
+        .splash-sakura {
+            display: inline-flex;
+            align-items: center;
+            font-size: 1.05rem;
+            color: var(--splash-accent, #76CBB7);
+            flex-shrink: 0;
+            line-height: 1;
+            animation: miko-breathe 3.6s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+        }
+        @keyframes miko-breathe { 0%, 100% { transform: translateY(0); opacity: .7; } 50% { transform: translateY(-2px); opacity: 1; } }
+        @media (prefers-reduced-motion: reduce) { .splash-sakura { animation: none; } }
+    </style>
+</head>
+<body>
+    <div id="react-root"></div>
+    <script src="modules/platform.js"></script>
+    <script type="module" src="./splash-main.tsx"></script>
+</body>
+</html>

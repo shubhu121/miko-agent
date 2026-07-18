@@ -1,0 +1,36 @@
+
+
+import { memo, type ReactNode } from 'react';
+import styles from './AttachmentChip.module.css';
+
+interface AttachmentChipProps {
+  icon: ReactNode;
+  name: string;
+  onRemove?: () => void;
+  className?: string;
+  variant?: 'normal' | 'expired';
+}
+
+export const AttachmentChip = memo(function AttachmentChip({
+  icon,
+  name,
+  onRemove,
+  className,
+  variant = 'normal',
+}: AttachmentChipProps) {
+  return (
+    <span className={`${styles.chip}${variant === 'expired' ? ` ${styles.expired}` : ''}${className ? ` ${className}` : ''}`}>
+      <span className={styles.name}>
+        <span className={styles.icon}>{icon}</span>
+        {name}
+      </span>
+      {onRemove && (
+        <button className={styles.remove} onClick={onRemove}>
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+      )}
+    </span>
+  );
+});

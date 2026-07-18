@@ -1,0 +1,600 @@
+import type { ThinkingLevel } from './stores/model-slice';
+
+// ── Auto-update ──
+
+export interface LocalizedReleaseText {
+  zh: string;
+  en: string;
+}
+
+export interface ReleaseDigestItem {
+  id: string;
+  kind: 'feature' | 'fix' | 'improvement' | 'migration';
+  importance: 'high' | 'medium' | 'low';
+  title: LocalizedReleaseText;
+  summary: LocalizedReleaseText;
+  details: LocalizedReleaseText[];
+  sources?: Array<{
+    type?: string;
+    ref?: string;
+    title?: string;
+  }>;
+}
+
+export interface ReleaseDigest {
+  schemaVersion: 1;
+  tag: string;
+  version: string;
+  previousTag: string;
+  generatedAt: string;
+  noUserFacingChanges: boolean;
+  summary: LocalizedReleaseText;
+  counts: {
+    feature: number;
+    fix: number;
+    improvement: number;
+    migration: number;
+  };
+  items: ReleaseDigestItem[];
+}
+
+export interface UpdateDigestHistoryResult {
+  entries: ReleaseDigest[];
+  source: 'online' | 'bundled' | 'none';
+  complete: boolean;
+}
+
+export interface AutoUpdateState {
+  status: 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'installing' | 'error' | 'latest';
+  version: string | null;
+  releaseNotes: string | null;
+  releaseUrl: string | null;
+  downloadUrl: string | null;
+  progress: {
+    percent: number;
+    bytesPerSecond: number;
+    transferred: number;
+    total: number;
+  } | null;
+  error: string | null;
+  digest?: ReleaseDigest | null;
+  digestUrl?: string | null;
+  digestError?: string | null;
+  updateSource?: {
+    provider: string;
+    owner?: string;
+    repo?: string;
+    feedUrl?: string;
+  } | null;
+}
+
+
+export interface TrainUpdateAvailable {
+  train: number;
+  version: string;
+  serverSha256: string;
+  rendererSha256: string;
+  sizes: { server: number; renderer: number };
+  recordedAt: string;
+}
+
+
+export interface CrashFallbackNotice {
+  kind: 'server' | 'renderer';
+  fromVersion: string | null;
+  toVersion: string | null;
+  quarantinedTrain: number | null;
+}
+
+
+export interface TrainUpdateStatus {
+  staged: boolean;
+  train: number | null;
+  version: string | null;
+  minShellBlocked: boolean;
+  available?: TrainUpdateAvailable | null;
+  lastError?: string | null;
+  lastCheckedAt?: string | null;
+  currentVersion: string;
+  
+  fallbackNotice?: CrashFallbackNotice | null;
+  
+  manifestSource?: 'origin' | 'mirror' | null;
+  manifestReleasedAt?: string | null;
+  originUnreachable?: boolean;
+}
+
+
+export interface TrainUpdateProgress {
+  phase: 'downloading' | 'verifying' | 'activating';
+  kind: 'server' | 'renderer';
+  receivedBytes: number;
+  totalBytes: number;
+  
+  overallReceivedBytes?: number;
+  overallTotalBytes?: number;
+}
+
+export interface AutoLaunchStatus {
+  supported: boolean;
+  openAtLogin: boolean;
+  openedAtLogin: boolean;
+  status: string | null;
+  executableWillLaunchAtLogin?: boolean | null;
+}
+
+export interface KeepAwakeStatus {
+  enabled: boolean;
+  active: boolean;
+  blockerId: number | null;
+  type: 'prevent-app-suspension';
+}
+
+export type DesktopNotificationFocusPolicy = 'always' | 'when_unfocused';
+
+export interface DesktopNotificationOptions {
+  desktopFocusPolicy?: DesktopNotificationFocusPolicy;
+}
+
+
+
+export type SessionPermissionMode = 'auto' | 'operate' | 'ask' | 'read_only';
+
+
+export interface SessionCapabilityDrift {
+  version: number;
+  
+  fingerprint: string;
+  frozenFingerprint: string;
+  addedToolNames: string[];
+  removedToolNames: string[];
+  invalidToolNames: string[];
+  promptChanged: boolean;
+  hasDrift: boolean;
+}
+
+export interface Session {
+  path: string;
+  sessionId?: string | null;
+  title: string | null;
+  firstMessage: string;
+  modified: string;
+  
+  revision?: string | null;
+  messageCount: number;
+  agentId: string | null;
+  agentName: string | null;
+  cwd: string | null;
+  workspaceMountId?: string | null;
+  workspaceLabel?: string | null;
+  projectId?: string | null;
+  permissionMode?: SessionPermissionMode | null;
+  pinnedAt?: string | null;
+  hasSummary?: boolean;
+  agentDeleted?: boolean;
+  readOnlyReason?: 'agent_deleted' | string | null;
+  continuationAvailable?: boolean;
+  deletedAt?: string | null;
+  rcAttachment?: {
+    sessionKey: string;
+    platform: string;
+    title?: string | null;
+  } | null;
+  _optimistic?: boolean;
+}
+
+export interface Agent {
+  id: string;
+  name: string;
+  yuan: string;
+  isPrimary: boolean;
+  hasAvatar?: boolean;
+  avatarRevision?: string | null;
+  chatModel?: { id: string; provider?: string | null } | null;
+  homeFolder?: string | null;
+  memoryMasterEnabled?: boolean;
+}
+
+export interface SessionStream {
+  streamId: string | null;
+  lastSeq: number;
+}
+
+export interface Model {
+  id: string;
+  name: string;
+  provider: string;
+  isCurrent?: boolean;
+  reasoning?: boolean;
+  xhigh?: boolean;
+  thinkingLevels?: ThinkingLevel[];
+  defaultThinkingLevel?: ThinkingLevel;
+  audio?: boolean;
+  audioTransport?: string | null;
+  audioTransportSupported?: boolean;
+  
+  input?: ("text" | "image" | "video")[];
+}
+
+export interface Channel {
+  id: string;
+  name: string;
+  description?: string;
+  members: string[];
+  lastMessage: string;
+  lastSender: string;
+  lastTimestamp: string;
+  messageCount?: number;
+  newMessageCount: number;
+  isDM?: boolean;
+  dmOwnerId?: string;
+  peerId?: string;
+  peerName?: string;
+}
+
+export interface ChannelMessage {
+  sender: string;
+  timestamp: string;
+  body: string;
+}
+
+export interface AgentPhoneActivity {
+  conversationId: string;
+  conversationType: 'channel' | 'dm';
+  agentId: string;
+  state: 'idle' | 'viewed' | 'triaging' | 'no_reply' | 'replying' | 'using_tool' | 'waiting_permission' | 'compacting' | 'error' | string;
+  summary: string;
+  timestamp: string;
+  details?: Record<string, unknown> | null;
+}
+
+export type ChannelAgentActivities = Record<string, Record<string, AgentPhoneActivity[]>>;
+
+export interface ChannelTickerStatus {
+  active?: {
+    channelName?: string;
+    agentId?: string;
+    activeAgentId?: string;
+    delivered?: number;
+    agentCount?: number;
+    checks?: number;
+    maxChecks?: number;
+    mode?: string;
+  } | null;
+  nextReminder?: {
+    channelName?: string;
+    dueAt?: string;
+    dueAtMs?: number;
+    intervalMs?: number;
+  } | null;
+  running?: boolean;
+  queued?: boolean;
+}
+
+export type ChannelTickerStatusMap = Record<string, ChannelTickerStatus | null>;
+export type AgentPhoneToolMode = 'read_only' | 'write';
+
+export interface AgentPhoneSettings {
+  mode: AgentPhoneToolMode;
+  replyMinChars: number | null;
+  replyMaxChars: number | null;
+  proactiveEnabled: boolean;
+  reminderIntervalMinutes: number;
+  guardLimit: number;
+  modelOverrideEnabled: boolean;
+  modelOverrideModel: { id: string; provider: string } | null;
+}
+
+export interface Activity {
+  id: string;
+  type: string;
+  title: string;
+  timestamp: string;
+  agentId?: string;
+  agentName?: string;
+  summary?: string;
+  [key: string]: unknown;
+}
+
+export interface PreviewItem {
+  id: string;
+  type: string;
+  title: string;
+  content: string;
+  language?: string | null;
+  fileId?: string;
+  filePath?: string;
+  ext?: string;
+  mime?: string;
+  kind?: string;
+  storageKind?: string;
+  sourceUrl?: string;
+  sourceRootPath?: string;
+  status?: 'available' | 'expired' | string;
+  missingAt?: number | null;
+  fileVersion?: FileVersion | null;
+  remoteContentRef?: RemoteContentRef | null;
+}
+
+export interface DeskFile {
+  name: string;
+  isDir: boolean;
+  size?: number;
+  mtime?: string;
+}
+
+export interface StudioWorkspace {
+  workspaceId: string;
+  mountId: string;
+  label: string;
+  sourceKind?: string | null;
+  provider?: string | null;
+  presentation?: string | null;
+  capabilities?: string[];
+  isDefault?: boolean;
+  
+  nativeRootPath?: string | null;
+}
+
+export interface WorkspaceChangePayload {
+  rootPath: string;
+  changedPath: string;
+  affectedDir: string;
+  eventType: string;
+}
+
+export interface DeskSearchResult {
+  name: string;
+  relativePath: string;
+  parentSubdir: string;
+  isDir: boolean;
+  size?: number | null;
+  mtime?: string;
+}
+
+export type TodoStatus = 'pending' | 'in_progress' | 'completed';
+
+export interface TodoItem {
+  content: string;
+  activeForm: string;
+  status: TodoStatus;
+}
+
+
+export type ActivePanel = 'activity' | 'automation' | 'bridge' | 'skills' | null;
+export type TabType = 'chat' | 'channels' | `plugin:${string}`;
+export type RightWorkspaceTab = 'session-files' | 'workspace' | `plugin-widget:${string}`;
+
+export interface FileVersion {
+  mtimeMs: number;
+  size: number;
+  sha256?: string;
+}
+
+export interface TextFileSnapshot {
+  content: string;
+  version: FileVersion;
+}
+
+export interface VersionedWriteResult {
+  ok: boolean;
+  conflict?: boolean;
+  version?: FileVersion | null;
+}
+
+export interface RemoteWorkbenchContentRef {
+  kind: 'workbench-file' | 'mobile-workbench';
+  mountId?: string;
+  rootId?: string;
+  subdir: string;
+  name: string;
+  contentPath: string;
+  version?: FileVersion | null;
+}
+
+export type RemoteContentRef = RemoteWorkbenchContentRef;
+
+// ── Plugin Card Protocol ──
+
+export interface PluginCardSessionRef {
+  sessionId?: string | null;
+  sessionPath?: string | null;
+  legacySessionPath?: string | null;
+  path?: string | null;
+}
+
+export interface PluginCardDetails {
+  type: string;         // "iframe" | "webview" | "chat.surface" | future types
+  pluginId: string;
+  route?: string;
+  title?: string;
+  description: string;  // IM fallback / degradation text
+  aspectRatio?: string;
+  sessionId?: string | null;
+  sessionRef?: PluginCardSessionRef | null;
+  sessionPath?: string | null;
+  mode?: 'transcript' | 'full' | string;
+  composer?: boolean;
+  unavailableReason?: string;
+}
+
+
+
+export interface PluginPageInfo {
+  pluginId: string;
+  title: string | Record<string, string>;
+  icon: string | null;
+  routeUrl: string;
+  hostCapabilities: string[];
+}
+
+export interface PluginWidgetInfo {
+  pluginId: string;
+  title: string | Record<string, string>;
+  icon: string | null;
+  routeUrl: string;
+  hostCapabilities: string[];
+}
+
+export interface PluginUiHostCapabilityGrant {
+  pluginId: string;
+  hostCapabilities: string[];
+}
+
+export interface BrowserViewerTab {
+  tabId: string;
+  title?: string;
+  url?: string | null;
+  canGoBack?: boolean;
+  canGoForward?: boolean;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+export interface BrowserViewerUpdate {
+  title?: string;
+  url?: string | null;
+  canGoBack?: boolean;
+  canGoForward?: boolean;
+  running?: boolean;
+  reason?: string | null;
+  sessionPath?: string | null;
+  activeTabId?: string | null;
+  tabs?: BrowserViewerTab[];
+}
+
+export interface BrowserViewerOpenTarget {
+  url?: string | null;
+  sessionPath?: string | null;
+}
+
+
+export interface PlatformApi {
+  getServerPort(): Promise<string>;
+  getServerToken(): Promise<string>;
+  runEditCommand?(command: 'cut' | 'copy' | 'paste' | 'selectAll'): Promise<boolean>;
+  openSettings(tab?: string): void;
+  openBrowserViewer(target?: string | BrowserViewerOpenTarget): void;
+  selectFolder(): Promise<string | null>;
+  selectFiles(): Promise<string[]>;
+  selectSkill(): Promise<string | null>;
+  selectPlugin?(): Promise<string | null>;
+  readFile(path: string): Promise<string | null>;
+  writeFile(filePath: string, content: string): Promise<boolean>;
+  writeFileBinary?(filePath: string, base64Data: string): Promise<boolean>;
+  copyFile?(sourcePath: string, destinationPath: string): Promise<boolean>;
+  readFileSnapshot?(path: string): Promise<TextFileSnapshot | null>;
+  writeFileIfUnchanged?(filePath: string, content: string, expectedVersion?: FileVersion | null): Promise<VersionedWriteResult>;
+  watchFile(filePath: string): Promise<boolean>;
+  unwatchFile(filePath: string): Promise<boolean>;
+  onFileChanged(callback: (filePath: string) => void): void;
+  watchWorkspace?(rootPath: string): Promise<boolean>;
+  unwatchWorkspace?(rootPath: string): Promise<boolean>;
+  onWorkspaceChanged?(callback: (payload: WorkspaceChangePayload) => void): void;
+  readFileBase64(path: string): Promise<string | null>;
+  
+  getFileUrl?(path: string): string;
+  readDocxHtml(path: string): Promise<string | null>;
+  readXlsxHtml(path: string): Promise<string | null>;
+  
+  spawnViewer(data: { filePath: string; title: string; type: string; language?: string | null }): Promise<number | null>;
+  
+  viewerRequestLoad?(): Promise<{ filePath: string; title: string; type: string; language?: string | null; windowId: number } | null>;
+  
+  viewerClose?(): void;
+  
+  onViewerClosed?(callback: (windowId: number) => void): void;
+  openFolder(path: string): void;
+  openFile(path: string): void;
+  openExternal(url: string): void;
+  showInFinder(path: string): void;
+  trashItem?(path: string): Promise<boolean>;
+  browserEmergencyStop?(sessionPath?: string | null): void;
+  openSkillViewer?(opts: { skillPath?: string; name?: string; baseDir?: string; filePath?: string; installed?: boolean }): void;
+  settingsChanged(event: string, payload?: unknown): void;
+  syncWindowTheme?(theme: string): void;
+  onSettingsChanged(callback: (event: string, payload: unknown) => void): void | (() => void);
+  onOpenSettingsModal?(callback: (tab?: string) => void): void | (() => void);
+  onSwitchTab?(callback: (tab: string) => void): void | (() => void);
+  onServerRestarted?(callback: (data: { port: number; token?: string | null }) => void): void | (() => void);
+  getFilePath?(file: File): string | null;
+  startDrag?(filePaths: string | string[]): void;
+  appReady(): void;
+
+  // ── Window controls (Windows/Linux) ──
+  getPlatform?(): Promise<string>;
+  windowMinimize?(): void;
+  windowMaximize?(): void;
+  windowClose?(): void;
+  windowIsMaximized?(): Promise<boolean>;
+  onMaximizeChange?(callback: (maximized: boolean) => void): void;
+
+  // ── Browser viewer ──
+  onBrowserUpdate?(callback: (data: BrowserViewerUpdate) => void): void | (() => void);
+  closeBrowserViewer?(): void;
+  closeBrowser?(): void;
+  browserGoBack?(sessionPath?: string | null): void;
+  browserGoForward?(sessionPath?: string | null): void;
+  browserReload?(sessionPath?: string | null): void;
+  browserNewTab?(sessionPath?: string | null): void;
+  browserSwitchTab?(tabId: string, sessionPath?: string | null): void;
+  browserCloseTab?(tabId: string, sessionPath?: string | null): void;
+
+  // ── Skill viewer (preload) ──
+  listSkillFiles?(baseDir: string): Promise<unknown[]>;
+  readSkillFile?(filePath: string): Promise<string | null>;
+
+  // ── Splash / Onboarding ──
+  getAvatarPath?(role: string): Promise<string | null>;
+  getSplashInfo?(): Promise<{ agentName?: string; locale?: string; yuan?: string } | null>;
+  reloadMainWindow?(): Promise<void>;
+  onboardingComplete?(): Promise<void>;
+
+  // ── Notification ──
+  showNotification?(title: string, body: string, agentId?: string | null, options?: DesktopNotificationOptions): void;
+
+  // ── App info ──
+  getAppVersion?(): Promise<string>;
+  
+  getPendingAnnouncement?(): Promise<{ version: string; entries: ReleaseDigest[] } | null>;
+  ackAnnouncement?(): Promise<void>;
+
+  // ── Auto-update (Windows) ──
+  autoUpdateCheck?(): Promise<string | null>;
+  autoUpdateDownload?(): Promise<boolean>;
+  autoUpdateInstall?(): Promise<boolean>;
+  autoUpdateState?(): Promise<AutoUpdateState>;
+  autoUpdateSetChannel?(channel: 'stable' | 'beta'): Promise<void>;
+  onAutoUpdateState?(callback: (state: AutoUpdateState) => void): (() => void) | void;
+  
+  trainUpdateStatus?(): Promise<TrainUpdateStatus>;
+  trainUpdateCheck?(): Promise<{ outcome: string; train?: number; version?: string; minShellBlocked?: boolean; error?: string }>;
+  trainUpdateApply?(): Promise<{ ok: boolean; error?: string }>;
+  
+  onTrainUpdateAvailable?(callback: (payload: { version: string; minShellBlocked: boolean }) => void): (() => void) | void;
+  
+  onTrainUpdateProgress?(callback: (progress: TrainUpdateProgress) => void): (() => void) | void;
+  
+  onTrainFallbackNotice?(callback: (payload: CrashFallbackNotice) => void): (() => void) | void;
+  
+  ackTrainFallbackNotice?(): Promise<{ ok: boolean }>;
+  
+  getUpdateDigestHistory?(): Promise<UpdateDigestHistoryResult>;
+  getAutoLaunchStatus?(): Promise<AutoLaunchStatus>;
+  setAutoLaunchEnabled?(enabled: boolean): Promise<AutoLaunchStatus>;
+  getKeepAwakeStatus?(): Promise<KeepAwakeStatus>;
+  setKeepAwakeEnabled?(enabled: boolean): Promise<KeepAwakeStatus>;
+  quickChatReloadShortcut?(): Promise<{ ok: boolean; shortcut: string; error?: string }>;
+  quickChatShortcutStatus?(): Promise<{ shortcut: string; registered: boolean }>;
+  quickChatShow?(): void;
+  quickChatHide?(): void;
+  quickChatResize?(request: 'compact' | 'chat' | { mode: 'compact' | 'chat'; height?: number }): void;
+  quickChatOpenSession?(sessionPath: string): void;
+  onQuickChatOpenSession?(callback: (payload: { sessionPath?: string }) => void): (() => void) | void;
+  onQuickChatShown?(callback: () => void): (() => void) | void;
+
+  // ── Skill viewer overlay ──
+  onShowSkillViewer?(callback: (data: unknown) => void): void;
+
+  [key: string]: unknown;
+}

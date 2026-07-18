@@ -1,0 +1,33 @@
+/*
+ * Miko — the default companion theme.
+ * Soft mineral surfaces, a confident teal action color, and a small coral
+ * warmth borrowed from Miko's ears and collar.
+ */
+[data-theme="miko"],
+:root:not([data-theme]) {
+    --bg: #F3F8F6;
+    --bg-card: #FCFEFD;
+    --bg-glass: rgba(243, 248, 246, 0.82);
+    --sidebar-bg: #EAF4F0;
+    --sidebar-bridge-card-text: #365B52;
+    --text: #17342D;
+    --text-light: #47665E;
+    --text-muted: #718A82;
+    --text-secondary: #5D766E;
+    --accent: #0C8D78;
+    --accent-hover: #08715F;
+    --accent-light: rgba(12, 141, 120, 0.11);
+    --accent-bg: rgba(12, 141, 120, 0.08);
+    --accent-rgb: 12, 141, 120;
+    --border: rgba(23, 52, 45, 0.12);
+    --border-light: rgba(23, 52, 45, 0.08);
+    --overlay-subtle: rgba(23, 52, 45, 0.035);
+    --overlay-light: rgba(23, 52, 45, 0.065);
+    --overlay-medium: rgba(23, 52, 45, 0.15);
+    --shadow: rgba(18, 63, 53, 0.14);
+    --green: #198A69;
+    --coral: #D97968;
+    --user-bg: #D9F0E8;
+    --drop-overlay-bg: rgba(233, 246, 240, 0.9);
+    --paper-texture-card-blend-mode: normal;
+}

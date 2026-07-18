@@ -1,0 +1,67 @@
+
+
+[data-theme="new-warm-paper"] {
+    
+    --bg:           #F5EFE4;                    
+    --bg-card:      #FBF7EE;                    
+    --bg-glass:     rgba(251, 247, 238, 0.92);
+    --sidebar-bg:   #EFE8DB;                    
+
+    
+    --text:         #2A2622;                    
+    --text-light:   #4A433C;                    
+    --text-muted:   #6B6158;                    
+    
+
+    
+    --border:       #D8CFBE;                    
+    --shadow:       rgba(42, 38, 34, 0.04);     
+
+    
+    --accent:       #537D96;                    
+    --accent-hover: #3F6179;                    /* pressed */
+    --accent-light: rgba(83, 125, 150, 0.08);
+    --accent-rgb:   83, 125, 150;
+
+    
+    --green:        #4A6B4A;                    
+    --green-rgb:    74, 107, 74;
+    --coral:        #8B2C1F;                    
+    --coral-rgb:    139, 44, 31;
+    --danger:       #8B2C1F;
+    --danger-rgb:   139, 44, 31;
+
+    
+    --mood-text:    #3F6179;
+    --mood-bg:      rgba(83, 125, 150, 0.05);
+    --mood-border:  rgba(83, 125, 150, 0.18);
+
+    
+    --miko-text:    #2A2622;
+    --tool-bg:      rgba(42, 38, 34, 0.03);
+    --tool-text:    #6B6158;
+    --user-bg:      rgba(83, 125, 150, 0.08);
+    --drop-overlay-bg: rgba(245, 239, 228, 0.85);
+    --attach-bg:    rgba(42, 38, 34, 0.04);
+
+    --jian-note-bg:     #FBF7EE;
+    --jian-note-border: rgba(216, 207, 190, 0.4);
+
+    --overlay-subtle: rgba(42, 38, 34, 0.03);
+    --overlay-light:  rgba(42, 38, 34, 0.04);
+    --overlay-medium: rgba(42, 38, 34, 0.08);
+    --overlay-strong: rgba(42, 38, 34, 0.15);
+
+    
+    --radius-sm:     2px;                       
+    --radius-md:     3px;                       
+    --radius-lg:     4px;                       
+    --radius-input:  2px;                       
+    --radius-card:   3px;
+    --radius-chat-surface: 6px;                 
+    --radius-chat-card:  4px;                    
+    --border-width:  0.5px;                     
+
+    
+    --select-arrow: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%236B6158' fill='none' stroke-width='1.25' stroke-linecap='round'/%3E%3C/svg%3E");
+}

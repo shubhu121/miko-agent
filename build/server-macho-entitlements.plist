@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  server English only Mach-OEnglish onlynode English onlyEnglish onlyspawn-helper English onlyEnglish onlyEnglish only Developer ID +
+  hardened runtimeEnglish onlycodesign English only "options runtime" English onlyEnglish onlyEnglish only
+  entitlementsEnglish onlyEnglish only codesign English only entitlements English onlyEnglish only
+
+  English onlyEnglish onlyarm64 macOS English only W^XEnglish onlyhardened runtime English only
+  English only"English only"English onlyEnglish onlyEnglish only com.apple.security.cs.allow-jit English onlyEnglish onlyV8 English only
+  English only mmap(MAP_JIT) English only CodeRange English onlyEnglish onlynode English only
+  "Fatal process out of memory: Failed to reserve virtual memory for CodeRange"
+  English onlySIGTRAPEnglish onlyEnglish onlyEnglish onlyEnglish only
+  arm64 Mac English onlyEnglish only
+
+  English onlyEnglish onlyelectron-builder English only desktop/entitlements.mac.plistEnglish only
+  English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only
+  English onlyEnglish onlyEnglish onlyEnglish onlyEnglish only"English only"English onlyEnglish only
+  .node addon English only hardened runtimeEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+</dict>
+</plist>

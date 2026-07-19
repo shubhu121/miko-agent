@@ -193,7 +193,7 @@ describe("build-server-artifact: dual-kind seed manifest shape", () => {
 describe("build-server-artifact: keyset resolution", () => {
   it("defaults to the repo pinned keyset when MIKO_SIGN_KEYSET is unset", () => {
     const { keyset } = resolveBuildKeyset({});
-    expect(keyset[0].keyId).toBe("2026a");
+    expect(keyset[0].keyId).toBe("2026b");
   });
 
   it("uses the MIKO_SIGN_KEYSET override file when set", () => {

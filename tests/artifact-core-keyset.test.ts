@@ -5,12 +5,12 @@ import { describe, expect, it } from "vitest";
 const require = createRequire(import.meta.url);
 
 describe("artifact-core keyset loader", () => {
-  it("loads the pinned keyset as an array whose first entry is keyId 2026a", () => {
+  it("loads the active signing key first", () => {
     const { loadPinnedKeyset } = require("../shared/artifact-core/keyset.cjs");
     const keyset = loadPinnedKeyset();
     expect(Array.isArray(keyset)).toBe(true);
     expect(keyset.length).toBeGreaterThanOrEqual(1);
-    expect(keyset[0].keyId).toBe("2026a");
+    expect(keyset[0].keyId).toBe("2026b");
   });
 
   it("every entry carries a PEM string that parses as an ed25519 public key", () => {
@@ -37,6 +37,14 @@ describe("artifact-core keyset loader", () => {
     const entry = loadPinnedKeyset().find((e: { keyId: string }) => e.keyId === "2026a");
     expect(entry.publicKey).toBe(
       "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEABxlmYzrnEDdrKL7lW+KQsvO5omvy8Wyuj1G3YIs7eFo=\n-----END PUBLIC KEY-----\n",
+    );
+  });
+
+  it("pins the active 2026b public key bytes exactly", () => {
+    const { loadPinnedKeyset } = require("../shared/artifact-core/keyset.cjs");
+    const entry = loadPinnedKeyset().find((e: { keyId: string }) => e.keyId === "2026b");
+    expect(entry.publicKey).toBe(
+      "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEACqMtIVXNeFmun+NPuiLDL6YyA26yj7fsfqBjS35HfYM=\n-----END PUBLIC KEY-----\n",
     );
   });
 });

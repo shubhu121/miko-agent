@@ -1,6 +1,5 @@
 import fs from "fs/promises";
 import path from "path";
-import YAML from "js-yaml";
 import { Hono } from "hono";
 import { injectGlobalFields } from "../../shared/config-scope.ts";
 import { computeSettingsAvailableToolNames } from "../../shared/tool-categories.ts";
@@ -20,6 +19,7 @@ import { agentExists, validateId } from "../utils/validation.ts";
 import { readAuthPrincipal } from "../http/capability-guard.ts";
 import { isLocalOwnerPrincipal } from "../http/route-security.ts";
 import { readUserProfile } from "../../lib/user-profile-store.ts";
+import { parseConfigYaml } from "../../lib/memory/config-loader.ts";
 
 function agentDir(engine: any, id: string) {
   return path.join(engine.agentsDir, id);
@@ -133,7 +133,7 @@ function addAvailableTools(config: Record<string, any>, engine: any, id: string)
 
 async function buildAgentConfig(engine: any, id: string) {
   const configPath = path.join(agentDir(engine, id), "config.yaml");
-  const config = YAML.load(await fs.readFile(configPath, "utf-8")) as Record<string, any> || {};
+  const config = parseConfigYaml(await fs.readFile(configPath, "utf-8")) as Record<string, any>;
   normalizeExperienceConfigForResponse(config);
   config._raw = {
     api: { provider: config.api?.provider || "", base_url: config.api?.base_url || "" },

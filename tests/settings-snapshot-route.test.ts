@@ -203,6 +203,28 @@ describe("settings snapshot route", () => {
     expect((await res.json()).agentId).toBe(legacyId);
   });
 
+  it("recovers a settings snapshot from the malformed English-only config preamble", async () => {
+    const engine = await makeEngine();
+    await writeFile(path.join(engine.agentsDir, "agent-a", "config.yaml"), [
+      "This feature is available in English only.agent",
+      ": name: Agent A",
+      "  yuan: miko",
+      "experience:",
+      "  enabled: false",
+      "",
+    ].join("\n"));
+    const app = new Hono();
+    app.route("/api", createSettingsSnapshotRoute(engine));
+
+    const res = await app.request("/api/settings/snapshot?agentId=agent-a");
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).config).toMatchObject({
+      agent: { name: "Agent A", yuan: "miko" },
+      experience: { enabled: false },
+    });
+  });
+
   it("includes first-frame access and bridge truth in the unified settings snapshot", async () => {
     const engine = await makeEngine();
     const bridgeManager = {

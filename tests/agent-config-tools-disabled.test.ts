@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../lib/memory/config-loader.js", () => ({
   saveConfig: vi.fn(),
   clearConfigCache: vi.fn(),
+  parseConfigYaml: vi.fn(() => ({ tools: { disabled: [] } })),
 }));
 
 vi.mock("../lib/tools/experience.js", () => ({

@@ -98,6 +98,23 @@ describe("loadConfig", () => {
 });
 
 describe("saveConfig", () => {
+  it("recovers a config written with the malformed English-only preamble", () => {
+    fs.writeFileSync(
+      configPath,
+      "This feature is available in English only.agent\n: name: Miko\n  yuan: miko\nuser:\n  name: Ada\n",
+      "utf-8",
+    );
+
+    saveConfig(configPath, { tools: { disabled: ["workflow"] } });
+
+    expect(readYaml()).toMatchObject({
+      agent: { name: "Miko", yuan: "miko" },
+      user: { name: "Ada" },
+      tools: { disabled: ["workflow"] },
+    });
+    expect(fs.readFileSync(configPath, "utf-8")).toMatch(/^agent:\r?\n/);
+  });
+
   it("This feature is available in English only.", () => {
     writeYaml({ api: { provider: "openai", api_key: "sk-1", base_url: "https://api.openai.com/v1" }, user: { name: "Alice" } });
     saveConfig(configPath, { user: { age: 18 } });

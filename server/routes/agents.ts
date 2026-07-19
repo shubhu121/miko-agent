@@ -2,12 +2,11 @@
 import fs from "fs/promises";
 import fsSync from "fs";
 import path from "path";
-import YAML from "js-yaml";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { emitAppEvent } from "../app-events.ts";
 import { safeJson } from "../hono-helpers.ts";
-import { saveConfig, clearConfigCache } from "../../lib/memory/config-loader.ts";
+import { saveConfig, clearConfigCache, parseConfigYaml } from "../../lib/memory/config-loader.ts";
 import {
   listExperienceDocuments,
   normalizeExperienceCategory,
@@ -77,7 +76,7 @@ function isExperienceEnabled(engine, id) {
 
   try {
     const cfgPath = path.join(agentDir(engine, id), "config.yaml");
-    const cfg = YAML.load(fsSync.readFileSync(cfgPath, "utf-8")) || {};
+    const cfg = parseConfigYaml(fsSync.readFileSync(cfgPath, "utf-8"));
     return cfg.experience?.enabled === true;
   } catch {
     return false;
@@ -431,7 +430,7 @@ export function createAgentsRoute(engine) {
     try {
       const configPath = path.join(agentDir(engine, id), "config.yaml");
       
-      const config = YAML.load(await fs.readFile(configPath, "utf-8")) || {};
+      const config = parseConfigYaml(await fs.readFile(configPath, "utf-8"));
 
       normalizeExperienceConfigForResponse(config);
 
@@ -574,7 +573,7 @@ export function createAgentsRoute(engine) {
         const block = agentPartial[blockName];
         if (hasInlineProviderCredentialPatch(block)) {
           const cfgPath = path.join(agentDir(engine, id), "config.yaml");
-          const agentCfg = YAML.load(fsSync.readFileSync(cfgPath, "utf-8")) || {};
+          const agentCfg = parseConfigYaml(fsSync.readFileSync(cfgPath, "utf-8"));
           const { provider: provName, update: provUpdate } = buildInlineProviderCredentialUpdate(
             block,
             agentCfg[blockName]?.provider || "",

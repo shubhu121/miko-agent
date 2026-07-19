@@ -1,0 +1,26 @@
+{
+  "id": "beautify",
+  "name": "Beautify",
+  "version": "0.1.0",
+  "description": "English onlyEnglish onlyEnglish only Markdown cover English onlyEnglish onlyEnglish only Agent English only Notion-like coverEnglish only",
+  "trust": "full-access",
+  "hidden": true,
+  "capabilities": ["resource.read", "resource.write"],
+  "activationEvents": ["onStartup"],
+  "contributes": {
+    "configuration": {
+      "properties": {
+        "coverPromptGuidance": {
+          "type": "string",
+          "title": "Cover English only",
+          "default": ""
+        },
+        "coverResolution": {
+          "type": "string",
+          "title": "Cover English only",
+          "default": "2k"
+        }
+      }
+    }
+  }
+}

@@ -1,8 +1,4 @@
 <p align="center">
-  <img src="desktop/src/assets/miko/miko-mascot.png" width="112" alt="Miko mascot">
-</p>
-
-<p align="center">
   <img src="desktop/src/assets/miko/miko-mascot.png" width="80" alt="Miko">
 </p>
 

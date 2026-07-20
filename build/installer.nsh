@@ -463,7 +463,6 @@ CRCCheck off
   Delete "$INSTDIR\Miko.exe"
   Delete "$INSTDIR\Uninstall Miko.exe"
   Delete "$INSTDIR\miko-install-diagnostics.log"
-  !insertmacro mikoRemoveLegacyGlobalShortcuts
   Delete "$INSTDIR\uninstallerIcon.ico"
   Delete "$INSTDIR\*.pak"
   Delete "$INSTDIR\*.bin"

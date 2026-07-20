@@ -12,7 +12,7 @@ describe("WhatsApp Cloud API bridge", () => {
       accessToken: "test-token",
       phoneNumberId: "15551234567",
       agentId: "miko",
-      onMessage: async (message) => received.push(message),
+      onMessage: async (message) => { received.push(message); },
     });
 
     await expect(adapter.handleWebhook({

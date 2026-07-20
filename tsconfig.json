@@ -3,6 +3,7 @@
   "compilerOptions": {
     "jsx": "react-jsx",
     "baseUrl": ".",
+    "ignoreDeprecations": "6.0",
     "paths": {
       "@miko/plugin-protocol": ["packages/plugin-protocol/src/index.ts"],
       "@miko/plugin-sdk": ["packages/plugin-sdk/src/index.ts"],

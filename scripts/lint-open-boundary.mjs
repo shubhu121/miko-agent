@@ -168,6 +168,7 @@ export function collectImportSpecifiers({ relPath, sourceText }) {
  */
 export function resolveRelativeSpecifier({ rootDir = REPOSITORY_ROOT, importerRelPath, specifierText }) {
   if (!specifierText.startsWith(".")) return null;
+  if (path.extname(specifierText) && !CANDIDATE_EXTENSIONS.includes(path.extname(specifierText))) return null;
   const importerDir = path.dirname(importerRelPath);
   const rawTarget = toPosix(path.normalize(path.join(importerDir, specifierText)));
 

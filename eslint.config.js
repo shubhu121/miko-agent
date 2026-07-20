@@ -144,23 +144,9 @@ export default [
     },
   },
 
-                                    
   {
     files: ['core/**/*.{js,ts}', 'lib/**/*.{js,ts}', 'hub/**/*.{js,ts}', 'server/**/*.{js,ts}'],
-    ignores: ['lib/pi-sdk      
-            
-                                          
-                    
-                                                          
-                                                                
-           
-         
-      
-    
-
-                                             
-   
-                              *.{js,ts}'],
+    ignores: ['lib/pi-sdk/**'],
     rules: {
       'no-restricted-syntax': [
         'error',

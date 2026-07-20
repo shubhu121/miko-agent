@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "tag": "v0.421.8",
-  "version": "0.421.8",
-  "previousTag": "v0.412.7",
-  "generatedAt": "2026-07-20T12:30:00.000Z",
+  "tag": "v0.421.9",
+  "version": "0.421.9",
+  "previousTag": "v0.421.8",
+  "generatedAt": "2026-07-20T13:30:00.000Z",
   "noUserFacingChanges": false,
   "summary": {
-    "zh": "This patch fixes packaged Miko releases that could fail to start because a required Pi SDK module was missing.",
-    "en": "This patch fixes packaged Miko releases that could fail to start because a required Pi SDK module was missing."
+    "zh": "This patch restores Windows shortcuts and makes the Miko CI gate reliable.",
+    "en": "This patch restores Windows shortcuts and makes the Miko CI gate reliable."
   },
   "counts": {
     "feature": 0,
@@ -18,29 +18,29 @@
   "source": {
     "owner": "shubhu121",
     "repo": "miko-agent",
-    "commitRange": "v0.412.7..HEAD",
-    "releaseUrl": "https://github.com/shubhu121/miko-agent/releases/tag/v0.421.8",
+    "commitRange": "v0.421.8..HEAD",
+    "releaseUrl": "https://github.com/shubhu121/miko-agent/releases/tag/v0.421.9",
     "releaseNotes": ""
   },
   "items": [
     {
-      "id": "package-pi-sdk-runtime",
+      "id": "restore-windows-installer-shortcuts",
       "kind": "fix",
       "importance": "high",
       "title": {
-        "zh": "Package the Pi SDK runtime",
-        "en": "Package the Pi SDK runtime"
+        "zh": "Restore Windows installer shortcuts",
+        "en": "Restore Windows installer shortcuts"
       },
       "summary": {
-        "zh": "Windows, macOS, and Linux server archives now include the Pi SDK modules required at startup.",
-        "en": "Windows, macOS, and Linux server archives now include the Pi SDK modules required at startup."
+        "zh": "Miko installers now retain Start menu shortcuts during updates and recreate desktop shortcuts on reinstall.",
+        "en": "Miko installers now retain Start menu shortcuts during updates and recreate desktop shortcuts on reinstall."
       },
       "details": [],
       "sources": [
         {
           "type": "commit",
           "ref": "HEAD",
-          "title": "fix: package Pi SDK runtime in server archives"
+          "title": "fix: restore Windows installer shortcuts and CI"
         }
       ]
     }

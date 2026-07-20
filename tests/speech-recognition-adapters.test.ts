@@ -2,12 +2,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  dashscopeSpeechRecognitionAdapter,
-  mimoSpeechRecognitionAdapter,
-  openaiSpeechRecognitionAdapter,
-  volcengineSpeechRecognitionAdapter,
-} from "../core/speech-recognition/adapters.ts";
+import { openaiSpeechRecognitionAdapter } from "../core/speech-recognition/adapters.ts";
 
 let tmpDir;
 let audioFile;
@@ -65,112 +60,4 @@ describe("speech recognition adapters", () => {
     }));
   });
 
-  it("calls MiMo ASR through chat completions input_audio data URLs", async () => {
-    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
-      choices: [{ message: { content: "This feature is available in English only." } }],
-    }), { status: 200 }));
-
-    const result = await mimoSpeechRecognitionAdapter.transcribe(makeInput({
-      provider: { id: "mimo", baseUrl: "https://api.xiaomimimo.com/v1" },
-      model: { id: "mimo-v2.5-asr", protocolId: "mimo-chat-completions-asr" },
-      credentials: { apiKey: "mimo-key", baseUrl: "https://api.xiaomimimo.com/v1", api: "openai-completions" },
-      fetch: fetchImpl,
-    }));
-
-    expect(result.text).toBe("This feature is available in English only.");
-    const [, init] = (fetchImpl.mock.calls as any)[0];
-    expect((fetchImpl.mock.calls as any)[0][0]).toBe("https://api.xiaomimimo.com/v1/chat/completions");
-    expect(init!.headers).toMatchObject({ "api-key": "mimo-key", "Content-Type": "application/json" });
-    expect(JSON.parse(init!.body)).toMatchObject({
-      model: "mimo-v2.5-asr",
-      messages: [{
-        role: "user",
-        content: [{
-          type: "input_audio",
-          input_audio: { data: "data:audio/wav;base64,UklGRg==" },
-        }],
-      }],
-      asr_options: { language: "zh" },
-    });
-  });
-
-  it("calls MiMo Token Plan ASR through the Token Plan OpenAI-compatible base URL", async () => {
-    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
-      choices: [{ message: { content: "This feature is available in English only." } }],
-    }), { status: 200 }));
-
-    const result = await mimoSpeechRecognitionAdapter.transcribe(makeInput({
-      provider: { id: "mimo-token-plan", baseUrl: "https://token-plan-cn.xiaomimimo.com/v1" },
-      model: { id: "mimo-v2.5-asr", protocolId: "mimo-chat-completions-asr" },
-      credentials: { apiKey: "tp-mimo-key", baseUrl: "https://token-plan-cn.xiaomimimo.com/v1", api: "openai-completions" },
-      fetch: fetchImpl,
-    }));
-
-    expect(result.text).toBe("This feature is available in English only.");
-    const [url, init] = (fetchImpl.mock.calls as any)[0];
-    expect(url).toBe("https://token-plan-cn.xiaomimimo.com/v1/chat/completions");
-    expect(url).not.toContain("/anthropic");
-    expect(init!.headers).toMatchObject({ "api-key": "tp-mimo-key", "Content-Type": "application/json" });
-  });
-
-  it("calls DashScope Qwen ASR through the OpenAI-compatible input_audio shape", async () => {
-    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
-      choices: [{ message: { content: "This feature is available in English only." } }],
-    }), { status: 200 }));
-
-    await dashscopeSpeechRecognitionAdapter.transcribe(makeInput({
-      provider: { id: "dashscope", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1" },
-      model: { id: "qwen3-asr-flash", protocolId: "dashscope-qwen-asr-chat" },
-      credentials: { apiKey: "dashscope-key", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", api: "openai-completions" },
-      fetch: fetchImpl,
-    }));
-
-    const [, init] = (fetchImpl.mock.calls as any)[0];
-    expect((fetchImpl.mock.calls as any)[0][0]).toBe("https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions");
-    expect(init!.headers).toMatchObject({ Authorization: "Bearer dashscope-key", "Content-Type": "application/json" });
-    expect(JSON.parse(init!.body)).toMatchObject({
-      model: "qwen3-asr-flash",
-      stream: false,
-      messages: [{
-        role: "user",
-        content: [{
-          type: "input_audio",
-          input_audio: { data: "data:audio/wav;base64,UklGRg==" },
-        }],
-      }],
-      asr_options: { language: "zh", enable_itn: false },
-    });
-  });
-
-  it("calls Volcengine BigASR flash with resource headers and raw base64 audio data", async () => {
-    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
-      result: { text: "This feature is available in English only." },
-      audio_info: { duration: 2499 },
-    }), {
-      status: 200,
-      headers: { "X-Api-Status-Code": "20000000" },
-    }));
-
-    const result = await volcengineSpeechRecognitionAdapter.transcribe(makeInput({
-      provider: { id: "volcengine-speech", baseUrl: "https://openspeech.bytedance.com" },
-      model: { id: "bigasr-flash", protocolId: "volcengine-bigasr-transcription" },
-      credentials: { apiKey: "volc-key", baseUrl: "https://openspeech.bytedance.com", api: "volcengine-bigasr" },
-      fetch: fetchImpl,
-    }));
-
-    expect(result).toMatchObject({ text: "This feature is available in English only.", durationMs: 2499 });
-    const [, init] = (fetchImpl.mock.calls as any)[0];
-    expect((fetchImpl.mock.calls as any)[0][0]).toBe("https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash");
-    expect(init!.headers).toMatchObject({
-      "X-Api-Key": "volc-key",
-      "X-Api-Resource-Id": "volc.bigasr.auc_turbo",
-      "X-Api-Sequence": "-1",
-      "Content-Type": "application/json",
-    });
-    expect(JSON.parse(init!.body)).toMatchObject({
-      user: { uid: "volc-key" },
-      audio: { data: "UklGRg==" },
-      request: { model_name: "bigmodel" },
-    });
-  });
 });

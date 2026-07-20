@@ -1,6 +1,6 @@
 {
   "name": "miko",
-  "version": "0.421.8",
+  "version": "0.421.9",
   "type": "module",
   "description": "Miko - a personal AI companion with memory and soul",
   "license": "Apache-2.0",
@@ -236,6 +236,8 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
       "shortcutName": "Miko",
       "include": "build/installer.nsh"
     },

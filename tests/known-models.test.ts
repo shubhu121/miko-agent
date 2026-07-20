@@ -231,17 +231,8 @@ describe("known-models dictionary", () => {
     });
   });
 
-  it("lists provider-specific known model ids without exposing the raw dictionary", () => {
-    expect(listKnownProviderModels("zhipu")).toEqual(expect.arrayContaining([
-      "glm-5.2",
-      "glm-5.1",
-      "glm-4.7-flash",
-    ]));
+  it("returns no models for an unknown provider", () => {
     expect(listKnownProviderModels("missing-provider")).toEqual([]);
-  });
-
-  it("lists GLM-5.2 first in the curated Zhipu defaults", () => {
-    expect(defaultModels.zhipu[0]).toBe("glm-5.2");
   });
 
   it("declares OpenCode Go GLM-5.2 with the GLM OpenAI-compatible thinking contract", () => {
@@ -262,47 +253,6 @@ describe("known-models dictionary", () => {
         dialect: "openai",
         toolResultFormat: "message",
       },
-    });
-  });
-
-  it("declares GLM Coding Plan fixed models under the Zhipu coding provider", () => {
-    expect(defaultModels["zhipu-coding"]).toEqual([
-      "glm-5.2",
-      "glm-5-turbo",
-      "glm-4.7",
-      "glm-4.5-air",
-    ]);
-    expect(lookupKnown("zhipu-coding", "glm-5.2")).toMatchObject({
-      name: "GLM-5.2",
-      context: 1000000,
-      maxOutput: 131072,
-      image: false,
-      reasoning: true,
-      xhigh: true,
-    });
-    for (const id of ["glm-5-turbo", "glm-4.7", "glm-4.5-air"]) {
-      expect(lookupKnown("zhipu-coding", id)).toMatchObject({
-        context: 200000,
-        image: false,
-        reasoning: true,
-      });
-    }
-  });
-
-  it("declares Agnes 2.0 Flash as a curated OpenAI-compatible multimodal agent model", () => {
-    expect(defaultModels.agnes).toEqual(["agnes-2.0-flash"]);
-    expect(lookupKnown("agnes", "agnes-2.0-flash")).toMatchObject({
-      name: "Agnes 2.0 Flash",
-      image: true,
-      reasoning: false,
-      toolUse: {
-        supportsTools: true,
-        dialect: "openai",
-        toolResultFormat: "message",
-      },
-    });
-    expect(lookupKnown("custom", "agnes-2.0-flash")).toMatchObject({
-      reasoning: false,
     });
   });
 

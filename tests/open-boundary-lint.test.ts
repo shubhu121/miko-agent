@@ -97,6 +97,14 @@ describe("lint-open-boundary: relative specifier resolution", () => {
       .toBe("cli/args.ts");
   });
 
+  it("skips relative static asset specifiers", () => {
+    expect(resolveRelativeSpecifier({
+      rootDir: REPOSITORY_ROOT,
+      importerRelPath: "desktop/src/react/splash/SplashApp.tsx",
+      specifierText: "../../assets/miko/miko-mascot.png",
+    })).toBeNull();
+  });
+
   it("throws when a relative specifier cannot be resolved to any file", () => {
     expect(() => resolveRelativeSpecifier({
       rootDir: REPOSITORY_ROOT,

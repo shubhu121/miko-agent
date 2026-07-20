@@ -49,26 +49,6 @@ async function audioFileBlob(file) {
   return new Blob([bytes], { type: file.mime || DEFAULT_MIME });
 }
 
-function audioBase64(file) {
-  const filePath = file?.realPath || file?.filePath;
-  if (!filePath) throw new Error("audio file path is required");
-  return fs.readFileSync(filePath).toString("base64");
-}
-
-function audioDataUrl(file) {
-  return `data:${file?.mime || DEFAULT_MIME};base64,${audioBase64(file)}`;
-}
-
-function audioChatMessage(dataUrl) {
-  return {
-    role: "user",
-    content: [{
-      type: "input_audio",
-      input_audio: { data: dataUrl },
-    }],
-  };
-}
-
 function trimTrailingSlash(value) {
   return String(value || "").replace(/\/+$/, "");
 }
@@ -87,9 +67,4 @@ function assertOk(response, body, fallbackMessage) {
   if (response.ok) return;
   const message = body?.error?.message || body?.message || body?.error || fallbackMessage;
   throw new Error(String(message));
-}
-
-function extractChatCompletionText(body) {
-  const text = body?.choices?.[0]?.message?.content ?? body?.choices?.[0]?.delta?.content ?? "";
-  return String(text).trim();
 }

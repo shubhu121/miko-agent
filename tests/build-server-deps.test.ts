@@ -133,7 +133,7 @@ describe("build-server external dependency packaging", () => {
     fs.writeFileSync(path.join(rootPackageDir, "index.js"), [
       "class Jieba {",
       "  static withDict(dict) { if (!Buffer.isBuffer(dict)) throw new Error('missing dict'); return new Jieba(); }",
-      "  loadDict(dict) { this.customDict = dict.toString('utf8'); }",
+      "  loadDict(dict) { if (!Buffer.isBuffer(dict)) throw new Error('custom dictionary must be a buffer'); this.customDict = dict.toString('utf8'); }",
       "  cutForSearch() {",
       "    if (!this.customDict.includes('session_search')) throw new Error('missing custom dict');",
       "    return ['session_search'];",

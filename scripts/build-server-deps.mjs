@@ -138,7 +138,7 @@ export function buildJiebaRuntimeSmokeScript() {
     "const { Jieba } = require('@node-rs/jieba');",
     "const { dict } = require('@node-rs/jieba/dict');",
     "const jieba = Jieba.withDict(dict);",
-    "jieba.loadDict('session_search 100 n\\n');",
+    "jieba.loadDict(Buffer.from('session_search 100 n\\n'));",
     "const tokens = jieba.cutForSearch('session_search', true);",
     "for (const token of ['session_search']) {",
     "  if (!tokens.includes(token)) {",

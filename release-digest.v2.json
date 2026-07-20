@@ -1,0 +1,2255 @@
+{
+  "schema": 2,
+  "entries": [
+    {
+      "schemaVersion": 1,
+      "tag": "v0.412.7",
+      "version": "0.412.7",
+      "previousTag": "v0.407.15",
+      "generatedAt": "2026-07-18T07:57:18.524Z",
+      "noUserFacingChanges": false,
+      "summary": {
+        "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyEnglish only ID English only Codex English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only image-gen English onlyEnglish only",
+        "en": "This release hardens startup and upgrades: the update progress bar now runs continuously across both server and renderer downloads; session event IDs are no longer mistaken for Codex model IDs in the catalog; failed or incomplete migrations no longer halt the whole chain, and source bytes are preserved for retry; corrupt early-epoch metadata no longer blocks launch. Media generation runtime moves into core, with a display change for sessions that used the retired image-gen plugin."
+      },
+      "counts": {
+        "feature": 0,
+        "fix": 5,
+        "improvement": 1,
+        "migration": 0
+      },
+      "source": {
+        "owner": "shubhu121",
+        "repo": "miko-agent",
+        "commitRange": "v0.407.15..v0.412.7",
+        "releaseUrl": "https://github.com/shubhu121/miko-agent/releases/tag/v0.412.7",
+        "releaseNotes": ""
+      },
+      "items": [
+        {
+          "id": "cumulative-update-progress",
+          "kind": "fix",
+          "importance": "high",
+          "title": {
+            "zh": "English only",
+            "en": "Continuous update progress across both artifacts"
+          },
+          "summary": {
+            "zh": "English only 0–100 English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Server and renderer downloads share one continuous 0–100 progress bar, and the verify gap no longer flashes an applying state."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "5b9dce70e",
+              "title": "fix(updater): report cumulative progress across both update artifacts"
+            }
+          ]
+        },
+        {
+          "id": "repair-codex-event-id-models",
+          "kind": "fix",
+          "importance": "high",
+          "title": {
+            "zh": "English only Codex English only ID",
+            "en": "Stop treating session event IDs as Codex model IDs"
+          },
+          "summary": {
+            "zh": "English only ID English only IDEnglish onlyEnglish onlyEnglish only",
+            "en": "Session event IDs are no longer treated as model IDs, and an upgrade repair removes the polluted catalog entries."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "5b5abafdd",
+              "title": "fix(models): stop treating session event ids as Codex model ids"
+            }
+          ]
+        },
+        {
+          "id": "migrations-survive-partial-failure",
+          "kind": "fix",
+          "importance": "high",
+          "title": {
+            "zh": "English only",
+            "en": "Keep startup available across partial migration failures"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "One failed migration no longer stops the rest of the chain; failed items retry on the next launch."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "21a853be1",
+              "title": "fix(migrations): keep startup available across partial failures"
+            }
+          ]
+        },
+        {
+          "id": "preserve-migration-sources-on-retry",
+          "kind": "fix",
+          "importance": "high",
+          "title": {
+            "zh": "English only",
+            "en": "Preserve legacy sources during migration retries"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Preference, config-scope, provider, and registry migrations keep source bytes and defer dependent work when inputs are unreadable or incomplete, instead of cleaning up and blocking startup."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "32b08808b",
+              "title": "fix(migrations): preserve legacy sources during retries"
+            }
+          ]
+        },
+        {
+          "id": "tolerate-epoch-one-metadata-faults",
+          "kind": "fix",
+          "importance": "high",
+          "title": {
+            "zh": "English only",
+            "en": "Tolerate corrupt early-epoch metadata"
+          },
+          "summary": {
+            "zh": "English only epoch English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Without higher-epoch evidence, corrupt early-epoch metadata is logged and ordinary startup continues."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "75773c1e8",
+              "title": "fix(startup): tolerate unproven epoch-one metadata faults"
+            }
+          ]
+        },
+        {
+          "id": "media-runtime-into-core",
+          "kind": "improvement",
+          "importance": "medium",
+          "title": {
+            "zh": "English only",
+            "en": "Move media generation runtime into core"
+          },
+          "summary": {
+            "zh": "English only image-gen English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "The legacy image-gen plugin is retired; its historical sessions show plain tool results instead of inline images, and the unavailable error code is renamed."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "94275ae74",
+              "title": "refactor(media): retire legacy image-gen plugin, move media runtime into core"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "tag": "v0.407.15",
+      "version": "0.407.15",
+      "previousTag": "v0.407.8",
+      "generatedAt": "2026-07-17T05:33:51.000Z",
+      "noUserFacingChanges": false,
+      "summary": {
+        "zh": "English only stable English onlyEnglish onlyEnglish onlyEnglish onlyEnglish only Codex OAuth English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+        "en": "This release hardens upgrades from stable: changed tool snapshots are refreshed before new input, Codex OAuth models referenced by existing data are preserved, legacy provider metadata is repaired, and older DingTalk application authentication and project skill-discovery policies are migrated. It also removes obsolete direct-message tool guidance from channels."
+      },
+      "counts": {
+        "feature": 0,
+        "fix": 2,
+        "improvement": 0,
+        "migration": 4
+      },
+      "source": {
+        "owner": "shubhu121",
+        "repo": "miko-agent",
+        "commitRange": "v0.407.8..v0.407.15",
+        "releaseUrl": "https://github.com/shubhu121/miko-agent/releases/tag/v0.407.15",
+        "releaseNotes": ""
+      },
+      "items": [
+        {
+          "id": "refresh-frozen-tool-snapshots",
+          "kind": "fix",
+          "importance": "high",
+          "title": {
+            "zh": "English only",
+            "en": "Refresh changed tool snapshots before input"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyMCP English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Existing sessions now refresh changed plugin, MCP, and built-in tool snapshots before accepting the next input instead of continuing with stale definitions."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "ffff66f63",
+              "title": "fix(sessions): preflight frozen tool drift before input (#2156)"
+            }
+          ]
+        },
+        {
+          "id": "preserve-codex-oauth-model-references",
+          "kind": "migration",
+          "importance": "high",
+          "title": {
+            "zh": "English only Codex OAuth English only",
+            "en": "Preserve Codex OAuth models referenced by existing data"
+          },
+          "summary": {
+            "zh": "English only AgentEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only Codex OAuth English onlyEnglish only",
+            "en": "Upgrades scan existing agents, sessions, scheduled tasks, and channel settings so referenced official Codex OAuth models remain available."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "c9c30a219",
+              "title": "fix(models): preserve referenced Codex OAuth models on upgrade"
+            }
+          ]
+        },
+        {
+          "id": "repair-provider-model-metadata",
+          "kind": "migration",
+          "importance": "high",
+          "title": {
+            "zh": "English only",
+            "en": "Repair legacy provider model metadata"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyAPIEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "The provider catalog is backed up before incompatible numeric, API, reasoning, and credential fields are repaired, while valid models, ordering, and custom metadata stay intact."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "f1f356fbc",
+              "title": "fix(models): repair incompatible catalog metadata on upgrade"
+            }
+          ]
+        },
+        {
+          "id": "remove-obsolete-channel-dm-guidance",
+          "kind": "fix",
+          "importance": "medium",
+          "title": {
+            "zh": "English only",
+            "en": "Remove obsolete direct-message guidance from channels"
+          },
+          "summary": {
+            "zh": "English only Agent English onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Channels no longer instruct agents to call a removed direct-message tool, preventing actions that cannot be executed."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "4abdf464f",
+              "title": "fix(channels): remove stale direct-message tool guidance"
+            }
+          ]
+        },
+        {
+          "id": "migrate-dingtalk-application-auth",
+          "kind": "migration",
+          "importance": "high",
+          "title": {
+            "zh": "English only",
+            "en": "Migrate legacy DingTalk application authentication"
+          },
+          "summary": {
+            "zh": "English only stable English onlyEnglish onlyEnglish onlyEnglish onlyEnglish only corpId English onlyEnglish only",
+            "en": "Existing DingTalk application credentials are explicitly migrated to legacy authentication with matching token and send endpoints; adding a corpId switches them to the current mode."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "1fb072d9e",
+              "title": "fix(dingtalk): preserve stable application auth on upgrade"
+            }
+          ]
+        },
+        {
+          "id": "preserve-project-skill-discovery-policy",
+          "kind": "migration",
+          "importance": "medium",
+          "title": {
+            "zh": "English only Agent English only",
+            "en": "Preserve project skill discovery for existing agents"
+          },
+          "summary": {
+            "zh": "English only Agent English onlyEnglish onlyEnglish onlyEnglish onlyEnglish only Agent English onlyEnglish only",
+            "en": "Existing agents without an explicit setting keep discovering compatible project skills; explicit choices and the default for newly created agents remain unchanged."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "50707271c",
+              "title": "fix(skills): preserve stable project discovery policy"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "tag": "v0.407.8",
+      "version": "0.407.8",
+      "previousTag": "v0.407.3",
+      "generatedAt": "2026-07-16T19:47:00.000Z",
+      "noUserFacingChanges": false,
+      "summary": {
+        "zh": "English only Kimi Coding English only Kimi K3English onlyEnglish only Windows English only/English onlyEnglish onlyEnglish only IDEnglish onlyEnglish only Kimi CodingEnglish onlyEnglish onlyEnglish only",
+        "en": "This release adds Kimi K3 for Kimi Coding; on Windows, artifact activation now retries directory swaps when antivirus or the indexer briefly locks freshly extracted files; configured model IDs (especially Kimi Coding) stay canonical, and reasoning-content replay follows centralized protocol contracts across tool loops and compaction."
+      },
+      "counts": {
+        "feature": 1,
+        "fix": 2,
+        "improvement": 0,
+        "migration": 0
+      },
+      "source": {
+        "owner": "shubhu121",
+        "repo": "miko-agent",
+        "commitRange": "v0.407.3..v0.407.8",
+        "releaseUrl": "https://github.com/shubhu121/miko-agent/releases/tag/v0.407.8",
+        "releaseNotes": ""
+      },
+      "items": [
+        {
+          "id": "kimi-k3-model",
+          "kind": "feature",
+          "importance": "high",
+          "title": {
+            "zh": "English only Kimi K3",
+            "en": "Add Kimi K3"
+          },
+          "summary": {
+            "zh": "Kimi Coding English only Kimi K3English onlyEnglish only 1M English onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Kimi Coding can select Kimi K3 (~1M context, reasoning-capable)."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "36c72e2b4",
+              "title": "fix(models): preserve selected ids and reasoning replay"
+            }
+          ]
+        },
+        {
+          "id": "windows-artifact-swap-retry",
+          "kind": "fix",
+          "importance": "high",
+          "title": {
+            "zh": "Windows English only",
+            "en": "Retry locked artifact directory swaps on Windows"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish only 16 English onlyEnglish onlyEnglish only EPERM English onlyEnglish only",
+            "en": "Transient EPERM/EACCES/EBUSY during the activation rename now backs off up to ~16s on Windows only."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "cd9e71b6e",
+              "title": "fix(desktop): retry artifact directory swap when Windows locks freshly extracted files"
+            }
+          ]
+        },
+        {
+          "id": "model-id-and-reasoning-replay",
+          "kind": "fix",
+          "importance": "high",
+          "title": {
+            "zh": "English only ID English only",
+            "en": "Keep model IDs and centralize reasoning replay"
+          },
+          "summary": {
+            "zh": "Kimi Coding English only ID English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Configured IDs stay canonical; reasoning replay uses shared protocol contracts across tool loops and cache-preserving compaction."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "36c72e2b4",
+              "title": "fix(models): preserve selected ids and reasoning replay"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "tag": "v0.407.3",
+      "version": "0.407.3",
+      "previousTag": "v0.403.0",
+      "generatedAt": "2026-07-16T13:17:00.000Z",
+      "noUserFacingChanges": false,
+      "summary": {
+        "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyCLI English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+        "en": "When a data-version gate blocks startup, this release adds dedicated recovery surfaces: bilingual desktop dialogs with recovery-point details, plus CLI diagnose / list / confirmed restore; it also fixes Chinese text leaking into the English line of the BLOCKED dialog."
+      },
+      "counts": {
+        "feature": 1,
+        "fix": 1,
+        "improvement": 0,
+        "migration": 0
+      },
+      "source": {
+        "owner": "shubhu121",
+        "repo": "miko-agent",
+        "commitRange": "v0.403.0..v0.407.3",
+        "releaseUrl": "https://github.com/shubhu121/miko-agent/releases/tag/v0.407.3",
+        "releaseNotes": ""
+      },
+      "items": [
+        {
+          "id": "data-version-recovery-surfaces",
+          "kind": "feature",
+          "importance": "high",
+          "title": {
+            "zh": "English only CLI",
+            "en": "Data-version recovery surfaces and CLI"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyEnglish only/English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyCLI English only miko data diagnoseEnglish onlycheckpointsEnglish onlyrestoreEnglish onlyEnglish onlyEnglish only",
+            "en": "Blocked startups get dedicated bilingual desktop dialogs (own/stamped epoch, recovery-point availability, two clear next steps); CLI adds miko data diagnose, checkpoints, and restore with a typed confirmation phrase."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "4272857df",
+              "title": "feat: add dedicated data-version recovery surfaces to desktop and CLI"
+            },
+            {
+              "type": "commit",
+              "ref": "3bfecd1f5",
+              "title": "feat(server): add journaled data-epoch restore with guarded stamp republish"
+            },
+            {
+              "type": "commit",
+              "ref": "6edaf9ba1",
+              "title": "feat(server): capture per-store checkpoints before breaking data migrations"
+            }
+          ]
+        },
+        {
+          "id": "blocked-dialog-checkpoint-line-locale",
+          "kind": "fix",
+          "importance": "medium",
+          "title": {
+            "zh": "English only",
+            "en": "BLOCKED dialog English checkpoint line no longer mixes Chinese"
+          },
+          "summary": {
+            "zh": "English only “Recovery point available:” English onlyEnglish only",
+            "en": "The English “Recovery point available:” line no longer prefixes the Chinese phrase."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "59e086c9c",
+              "title": "fix(desktop): stop leaking Chinese text into the BLOCKED dialog's English checkpoint line"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "tag": "v0.403.0",
+      "version": "0.403.0",
+      "previousTag": "v0.401.8",
+      "generatedAt": "2026-07-15T18:18:27.000Z",
+      "noUserFacingChanges": false,
+      "summary": {
+        "zh": "English only Dreamina English only CLI English onlyEnglish onlyEnglish only/English onlyEnglish onlyEnglish only GrabberEnglish onlyEnglish onlyEnglish only",
+        "en": "This release discovers Dreamina models from the installed CLI, narrows completion alerts to desktop chats and scheduled/patrol outcomes, and fixes editor heading syntax, touch Grabbers, and credential headers for non-session model calls."
+      },
+      "counts": {
+        "feature": 2,
+        "fix": 3,
+        "improvement": 0,
+        "migration": 0
+      },
+      "source": {
+        "owner": "shubhu121",
+        "repo": "miko-agent",
+        "commitRange": "v0.401.8..v0.403.0",
+        "releaseUrl": "https://github.com/shubhu121/miko-agent/releases/tag/v0.403.0",
+        "releaseNotes": ""
+      },
+      "items": [
+        {
+          "id": "dreamina-cli-capability-discovery",
+          "kind": "feature",
+          "importance": "high",
+          "title": {
+            "zh": "Dreamina CLI English only",
+            "en": "Dreamina CLI capability discovery"
+          },
+          "summary": {
+            "zh": "English only Dreamina English only CLIEnglish onlyEnglish onlyEnglish only",
+            "en": "Dreamina models and constraints now follow the installed CLI and refresh when Media settings regain focus or generation starts."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "284fba7b4",
+              "title": "feat(media): discover Dreamina CLI capabilities at runtime"
+            }
+          ]
+        },
+        {
+          "id": "completion-alert-categories",
+          "kind": "feature",
+          "importance": "high",
+          "title": {
+            "zh": "English only",
+            "en": "Narrower completion alert categories"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyEnglish only/English onlyEnglish only",
+            "en": "Successful turns no longer always fire completion alerts; only desktop chats and aggregate scheduled-task or patrol outcomes can notify."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "403bb2775",
+              "title": "feat(notifications): separate completion alert categories"
+            }
+          ]
+        },
+        {
+          "id": "provider-execution-headers",
+          "kind": "fix",
+          "importance": "medium",
+          "title": {
+            "zh": "English only",
+            "en": "Unified headers for non-session model calls"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Auxiliary vision, memory, health checks, and similar non-session calls now share one credential-aware execution config so protocol headers are not omitted and header-only credentials are not rejected."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "5ee661892",
+              "title": "fix(models): unify provider execution headers"
+            }
+          ]
+        },
+        {
+          "id": "bare-heading-hashes-visible",
+          "kind": "fix",
+          "importance": "medium",
+          "title": {
+            "zh": "English only",
+            "en": "Keep bare heading hashes visible"
+          },
+          "summary": {
+            "zh": "English only `#` English only `######`English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Bare `#` through `######` lines stay visible as body text until a space confirms a heading."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "889f7ec0f",
+              "title": "fix(editor): keep bare heading hashes visible"
+            }
+          ]
+        },
+        {
+          "id": "touch-grabber-focused-block",
+          "kind": "fix",
+          "importance": "medium",
+          "title": {
+            "zh": "English only Grabber English only",
+            "en": "Touch Grabbers follow the focused block"
+          },
+          "summary": {
+            "zh": "English only GrabberEnglish onlyEnglish onlyEnglish only",
+            "en": "Touch surfaces show only the focused block’s Grabber, and click-only block menus no longer replace the hovered node."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "3862f8482",
+              "title": "fix(editor): scope touch Grabbers to the focused block"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "tag": "v0.401.8",
+      "version": "0.401.8",
+      "previousTag": "v0.401.7",
+      "generatedAt": "2026-07-15T05:58:00.000Z",
+      "noUserFacingChanges": false,
+      "summary": {
+        "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyBridgeEnglish onlyHub English onlyEnglish only",
+        "en": "This release fixes tool failures for background sessions that lacked a durable identity. Scheduled activities, patrols, subagents, bridge sessions, Hub temporary sessions, and phone sessions now create and reuse a stable session identity before execution."
+      },
+      "counts": {
+        "feature": 0,
+        "fix": 1,
+        "improvement": 0,
+        "migration": 0
+      },
+      "source": {
+        "owner": "shubhu121",
+        "repo": "miko-agent",
+        "commitRange": "v0.401.7..v0.401.8",
+        "releaseUrl": "https://github.com/shubhu121/miko-agent/releases/tag/v0.401.8",
+        "releaseNotes": ""
+      },
+      "items": [
+        {
+          "id": "background-session-identity-backfill",
+          "kind": "fix",
+          "importance": "high",
+          "title": {
+            "zh": "English only",
+            "en": "Backfill session identity before background tools"
+          },
+          "summary": {
+            "zh": "English only manifest English onlyEnglish onlyEnglish only SessionRefEnglish onlyEnglish onlyEnglish only",
+            "en": "Background sessions without a manifest used to fail during tool assembly; they now create and persist a SessionRef first, then bind it across runtimes."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "1eff520c9",
+              "title": "fix(session): backfill identity before background tools"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "tag": "v0.401.7",
+      "version": "0.401.7",
+      "previousTag": "v0.397.15",
+      "generatedAt": "2026-07-14T15:43:10.000Z",
+      "noUserFacingChanges": false,
+      "summary": {
+        "zh": "English only Markdown English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyWindows English only GPU English onlyEnglish onlyEnglish only OpenCode Go English onlyEnglish only",
+        "en": "This release adds draggable Markdown block handles with marquee and batch actions, and drains pending interjections together at steering checkpoints. Session identity and archive lifecycle are steadier, Windows sandbox and GPU safe-mode migration are cleaner, and compaction plus OpenCode Go utility requests are more reliable."
+      },
+      "counts": {
+        "feature": 3,
+        "fix": 5,
+        "improvement": 1,
+        "migration": 2
+      },
+      "source": {
+        "owner": "shubhu121",
+        "repo": "miko-agent",
+        "commitRange": "v0.397.15..v0.401.7",
+        "releaseUrl": "https://github.com/shubhu121/miko-agent/releases/tag/v0.401.7",
+        "releaseNotes": ""
+      },
+      "items": [
+        {
+          "id": "markdown-block-handles",
+          "kind": "feature",
+          "importance": "high",
+          "title": {
+            "zh": "Markdown English only",
+            "en": "Draggable Markdown block handles"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Editable Markdown preview blocks expose a left handle that opens the existing format menu and supports drag reordering."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "49c1ab3ab",
+              "title": "feat(editor): add draggable Markdown block handles"
+            }
+          ]
+        },
+        {
+          "id": "markdown-block-marquee-batch",
+          "kind": "feature",
+          "importance": "medium",
+          "title": {
+            "zh": "English only",
+            "en": "Marquee multi-block selection and batch actions"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Gutter marquee selects a contiguous top-level block range so selected blocks share the full menu, batch formatting, and quote-to-chat."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "57d650aeb",
+              "title": "feat: add markdown block marquee selection"
+            },
+            {
+              "type": "commit",
+              "ref": "306df03b2",
+              "title": "feat(editor): add batch Markdown block actions"
+            },
+            {
+              "type": "commit",
+              "ref": "5f1828deb",
+              "title": "fix(editor): render markdown marquee rectangle"
+            }
+          ]
+        },
+        {
+          "id": "markdown-block-interaction-polish",
+          "kind": "improvement",
+          "importance": "medium",
+          "title": {
+            "zh": "English only",
+            "en": "Polished Markdown block editing"
+          },
+          "summary": {
+            "zh": "Grabber English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only Markdown English onlyEnglish only",
+            "en": "Grabber alignment and spacing, quote and code surfaces, drop indicators, and source-preserving block copy are tightened together."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "696f9381e",
+              "title": "fix(editor): align blockquote Grabber with the block rail"
+            },
+            {
+              "type": "commit",
+              "ref": "135d02260",
+              "title": "fix(editor): give Markdown block Grabber more space"
+            },
+            {
+              "type": "commit",
+              "ref": "0b12f44ee",
+              "title": "fix(editor): copy raw Markdown block selections"
+            },
+            {
+              "type": "commit",
+              "ref": "96c03c8e8",
+              "title": "fix(editor): align Markdown block geometry"
+            },
+            {
+              "type": "commit",
+              "ref": "d673e9a26",
+              "title": "fix(editor): harden Markdown block interactions"
+            }
+          ]
+        },
+        {
+          "id": "batch-pending-steering",
+          "kind": "feature",
+          "importance": "medium",
+          "title": {
+            "zh": "English only",
+            "en": "Batch pending steering messages"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish only Bridge English onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Pending interjections on desktop, mobile, and Bridge drain together at the next steering checkpoint."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "7e1c7a4a9",
+              "title": "feat(chat): batch pending steering messages"
+            }
+          ]
+        },
+        {
+          "id": "session-identity-before-tools",
+          "kind": "fix",
+          "importance": "high",
+          "title": {
+            "zh": "English only",
+            "en": "Bind session identity before runtime tools"
+          },
+          "summary": {
+            "zh": "BridgeEnglish onlyTelegramEnglish onlyPhone English only Hub English onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Bridge, Telegram, Phone, and Hub runtimes establish session identity before tools are built, so frozen tool contracts no longer silently shrink."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "90a960bb1",
+              "title": "fix(session): bind identity before runtime tools"
+            },
+            {
+              "type": "commit",
+              "ref": "cc9016e7e",
+              "title": "fix(activity): register isolated session identity first"
+            }
+          ]
+        },
+        {
+          "id": "session-locator-lifecycle",
+          "kind": "fix",
+          "importance": "medium",
+          "title": {
+            "zh": "English only",
+            "en": "Session locator and archive lifecycle"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Stale historical paths are no longer listed as active, and permanent deletion retains a deleted manifest tombstone."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "b08523c2e",
+              "title": "fix(sessions): bind current locator lifecycle"
+            }
+          ]
+        },
+        {
+          "id": "windows-sandbox-cwd-write-grants",
+          "kind": "fix",
+          "importance": "medium",
+          "title": {
+            "zh": "WindowsEnglish onlyEnglish only",
+            "en": "Windows: separate cwd from write grants"
+          },
+          "summary": {
+            "zh": "English only cwdEnglish onlyEnglish onlyEnglish only",
+            "en": "Per-command workdir selects process cwd without granting write access outside the session workspace and explicitly authorized roots."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "9bf1065d3",
+              "title": "fix(sandbox): separate Windows cwd from write grants"
+            }
+          ]
+        },
+        {
+          "id": "windows-gpu-safe-mode-migration",
+          "kind": "migration",
+          "importance": "medium",
+          "title": {
+            "zh": "WindowsEnglish onlyEnglish only GPU English only",
+            "en": "Windows: migrate stale GPU safe mode"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Exact legacy crash evidence advances to sandbox compatibility, while cleanup removes only the exact legacy false value and preserves explicit user choices."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "548bc8f97",
+              "title": "fix(gpu): migrate exact stale enabled safe mode"
+            },
+            {
+              "type": "commit",
+              "ref": "d8c06512a",
+              "title": "fix: gate legacy GPU preference cleanup"
+            }
+          ]
+        },
+        {
+          "id": "opencode-go-utility-protocol",
+          "kind": "fix",
+          "importance": "medium",
+          "title": {
+            "zh": "English only OpenCode Go English only",
+            "en": "Preserve OpenCode Go utility protocol"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish only token English onlyEnglish onlyEnglish only API English onlyEnglish only",
+            "en": "Utility and memory requests disable reasoning correctly, preserve the provider token field, and reject unsupported buffered APIs before network I/O."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "a59778545",
+              "title": "fix(memory): preserve OpenCode Go utility protocol"
+            }
+          ]
+        },
+        {
+          "id": "compaction-cache-summary",
+          "kind": "fix",
+          "importance": "medium",
+          "title": {
+            "zh": "English only",
+            "en": "Compaction no longer invents an output cap"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Cache-preserving compaction no longer turns the reserve estimate into a numeric output cap; bounded mode remains explicit."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "033a8036a",
+              "title": "fix(compaction): normalize cache summary requests"
+            }
+          ]
+        },
+        {
+          "id": "pi-runtime-out-of-config",
+          "kind": "migration",
+          "importance": "low",
+          "title": {
+            "zh": "Pi English only",
+            "en": "Move Pi runtime files out of config"
+          },
+          "summary": {
+            "zh": "English only `.pi`English onlyEnglish only runtimeEnglish onlyEnglish onlyEnglish only",
+            "en": "Startup no longer creates a config-directory `.pi` folder. Managed search binaries live under runtime and copy forward from the legacy cache on first use."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "aa80f9f1f",
+              "title": "fix: move Pi runtime support out of config directory"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "tag": "v0.397.15",
+      "version": "0.397.15",
+      "previousTag": "v0.397.1",
+      "generatedAt": "2026-07-13T12:31:00.000Z",
+      "noUserFacingChanges": false,
+      "summary": {
+        "zh": "English only Windows English onlyEnglish onlyEnglish only GPU English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyAgent English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+        "en": "This release steadies Windows desktop server lifetime and system-certificate trust, with a one-time legacy GPU safe-mode migration; sidebar single-line mode restores after cold start, and editor tables match the text column. Agent mentions and review cards are clearer, plugin snapshots no longer reload live sessions, and reminder privacy plus settings drafts are more reliable."
+      },
+      "counts": {
+        "feature": 0,
+        "fix": 8,
+        "improvement": 2,
+        "migration": 1
+      },
+      "source": {
+        "owner": "shubhu121",
+        "repo": "miko-agent",
+        "commitRange": "v0.397.1..v0.397.15",
+        "releaseUrl": "https://github.com/shubhu121/miko-agent/releases/tag/v0.397.15",
+        "releaseNotes": ""
+      },
+      "items": [
+        {
+          "id": "windows-server-lifetime-guardian",
+          "kind": "fix",
+          "importance": "high",
+          "title": {
+            "zh": "WindowsEnglish onlyEnglish only",
+            "en": "Windows: supervise desktop server lifetime"
+          },
+          "summary": {
+            "zh": "English only Job English onlyEnglish onlyEnglish onlyEnglish onlyEnglish only/English onlyEnglish only",
+            "en": "Desktop-owned servers run under a parent-watching Job guardian. Unconfirmed shutdowns fail closed, and update/quit races can no longer spawn detached replacements."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "4f81fc123",
+              "title": "fix(windows): supervise desktop server lifetime (#2118)"
+            }
+          ]
+        },
+        {
+          "id": "windows-system-certificate-store",
+          "kind": "fix",
+          "importance": "high",
+          "title": {
+            "zh": "WindowsEnglish onlyEnglish only",
+            "en": "Windows: trust the system certificate store"
+          },
+          "summary": {
+            "zh": "HTTPSEnglish onlyEnglish onlyEnglish onlyEnglish only CAEnglish only",
+            "en": "HTTPS clients, plugin installs, and update downloads extend Node trust with the system certificate store while keeping bundled roots and extra CA configuration."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "013b48a83",
+              "title": "fix(windows): trust the system certificate store (#2115)"
+            }
+          ]
+        },
+        {
+          "id": "windows-legacy-gpu-safe-mode-migration",
+          "kind": "migration",
+          "importance": "high",
+          "title": {
+            "zh": "WindowsEnglish onlyEnglish only GPU English only",
+            "en": "Windows: migrate legacy GPU safe mode"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Exact legacy gpu-child-process-gone evidence migrates once into staged sandbox compatibility. Explicit user choices and incomplete evidence stay untouched."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "9b78ab2c2",
+              "title": "fix(windows): migrate legacy GPU safe mode (#2108 #2109)"
+            }
+          ]
+        },
+        {
+          "id": "sidebar-row-mode-cold-start",
+          "kind": "fix",
+          "importance": "high",
+          "title": {
+            "zh": "English only",
+            "en": "Sidebar single-line mode restores after cold start"
+          },
+          "summary": {
+            "zh": "English only Studio English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Sidebar preferences wait for the active Studio connection and retry transient startup failures, so persisted single-line mode no longer stays stuck on two lines after cold start."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "6ff2ea3a1",
+              "title": "fix(sidebar): restore row mode after cold start"
+            }
+          ]
+        },
+        {
+          "id": "editor-markdown-table-width",
+          "kind": "fix",
+          "importance": "medium",
+          "title": {
+            "zh": "Markdown English only",
+            "en": "Markdown tables match the text column width"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Editor and Preview tables align to the same content column as body text, and long unbreakable tokens no longer blow past the container."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "6cedcce0b",
+              "title": "fix(editor): English only Markdown English only"
+            }
+          ]
+        },
+        {
+          "id": "agent-mentions-and-review-cards",
+          "kind": "improvement",
+          "importance": "medium",
+          "title": {
+            "zh": "Agent English only refinement",
+            "en": "Clearer Agent mentions and review cards"
+          },
+          "summary": {
+            "zh": "English only Agent English onlyEnglish onlyEnglish only MarkdownEnglish onlyEnglish onlyEnglish only",
+            "en": "Mentions use Agent avatars. Review content renders through full Markdown, and review cards become localized, conversation-named navigation surfaces."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "b9fceb57f",
+              "title": "fix(chat): refine Agent mentions and review cards"
+            },
+            {
+              "type": "commit",
+              "ref": "b4d24efd9",
+              "title": "fix(chat): render Agent reviews through full Markdown preview"
+            }
+          ]
+        },
+        {
+          "id": "plugin-json-configuration-drafts",
+          "kind": "fix",
+          "importance": "medium",
+          "title": {
+            "zh": "English only JSON English only",
+            "en": "Plugin JSON configuration drafts stay editable"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Invalid JSON drafts remain visible and block saving until corrected, without being repeatedly re-serialized away while you edit."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "25df28f57",
+              "title": "fix(plugins): preserve JSON configuration drafts (#2107)"
+            }
+          ]
+        },
+        {
+          "id": "provider-api-type-drafts",
+          "kind": "fix",
+          "importance": "medium",
+          "title": {
+            "zh": "English only API English only",
+            "en": "Provider API type drafts persist"
+          },
+          "summary": {
+            "zh": "API English onlyEnglish onlyEnglish only/English onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "API type selection stays visible, participates in the initial save, and surfaces server or refresh failures instead of silently reverting."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "41a06ebee",
+              "title": "fix(settings): persist provider API type drafts (#2103)"
+            }
+          ]
+        },
+        {
+          "id": "plugin-snapshots-reminder-privacy",
+          "kind": "fix",
+          "importance": "medium",
+          "title": {
+            "zh": "English only",
+            "en": "Preserve plugin snapshots and reminder privacy"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish only reminder English onlyEnglish only",
+            "en": "Installing plugins no longer reloads existing sessions, and internal reminder blocks are stripped by the shared display projection."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "c1f8d5dc3",
+              "title": "fix(session): preserve plugin snapshots and reminder privacy (#2105)"
+            }
+          ]
+        },
+        {
+          "id": "workspace-scope-vs-cwd",
+          "kind": "fix",
+          "importance": "medium",
+          "title": {
+            "zh": "English only Scope English only CWD English only",
+            "en": "Separate workspace Scope from execution CWD"
+          },
+          "summary": {
+            "zh": "Scope English onlyEnglish onlyPi CWD English onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Scope describes the primary workbench and external project folders, while Pi CWD remains the execution base. Cached Agent prompts no longer carry concrete workspace paths."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "71e030afe",
+              "title": "fix(prompt): separate workspace scope from cwd semantics (#2099)"
+            }
+          ]
+        },
+        {
+          "id": "update-progress-and-sidebar-labels",
+          "kind": "improvement",
+          "importance": "low",
+          "title": {
+            "zh": "English only",
+            "en": "Update progress bar and sidebar labels"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Download progress becomes one themed bar with a single percentage. The update notice icon moves before its text, and the Chinese social-platform sidebar label is shortened."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "bdc18e6ca",
+              "title": "fix: refine update progress and sidebar labels"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "tag": "v0.397.1",
+      "version": "0.397.1",
+      "previousTag": "v0.391.2",
+      "generatedAt": "2026-07-13T03:03:00.000Z",
+      "noUserFacingChanges": false,
+      "summary": {
+        "zh": "English only Agent English only @ English onlyEnglish onlyEnglish only/English only Markdown English onlyEnglish onlyEnglish only Agent English only DM English onlyEnglish onlyEnglish only miko bundle English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+        "en": "This release adds session/Agent @mentions and Markdown export for the open group or DM chat, while retiring the Agent-callable DM tool; self-hosted setups can pull the web UI with miko bundle; the data directory gains an epoch gate and same-home mutual exclusion; Stop is more reliable, update download/activation is steadier; and startup no longer shows a post-update version popup."
+      },
+      "counts": {
+        "feature": 4,
+        "fix": 3,
+        "improvement": 2,
+        "migration": 1
+      },
+      "source": {
+        "owner": "shubhu121",
+        "repo": "miko-agent",
+        "commitRange": "v0.391.2..v0.397.1",
+        "releaseUrl": "https://github.com/shubhu121/miko-agent/releases/tag/v0.397.1",
+        "releaseNotes": ""
+      },
+      "items": [
+        {
+          "id": "session-agent-mentions",
+          "kind": "feature",
+          "importance": "high",
+          "title": {
+            "zh": "English only Agent English only @ English only",
+            "en": "Session and Agent @mentions"
+          },
+          "summary": {
+            "zh": "English only Session IDEnglish onlyEnglish onlyEnglish only@Agent English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Stable Session IDs are copyable, and the composer supports tabbed mentions. @Agent waits for a separate read-only review session before the current turn continues; review turns do not expose generic edit or regenerate actions."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "f12af4271",
+              "title": "feat: add session and agent mentions"
+            }
+          ]
+        },
+        {
+          "id": "retire-dm-tool-export-chats",
+          "kind": "feature",
+          "importance": "high",
+          "title": {
+            "zh": "English only Agent DM English onlyEnglish onlyEnglish only",
+            "en": "Retire the Agent DM tool and export the open chat"
+          },
+          "summary": {
+            "zh": "Agent English only dmEnglish onlyEnglish only Agent Phone English onlyEnglish onlyEnglish only MarkdownEnglish only",
+            "en": "Agents can no longer enable or call dm, while existing private-message history and Agent Phone remain. Group and DM inspectors can download only the currently open conversation as Markdown."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "7c77cdb55",
+              "title": "feat: retire Agent DM tool and export chats"
+            }
+          ]
+        },
+        {
+          "id": "cli-bundle-pull-web-ui",
+          "kind": "feature",
+          "importance": "medium",
+          "title": {
+            "zh": "CLIEnglish onlymiko bundle English only",
+            "en": "CLI: pull the web UI with miko bundle"
+          },
+          "summary": {
+            "zh": "English only miko bundle pull / status English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Self-hosted installs can manually pull and activate the web UI content pack with miko bundle pull / status, using the same signed update pipeline as desktop hot updates. Pulls only happen when you run the command."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "b9c96d667",
+              "title": "feat(cli): miko bundle pull/status English only"
+            }
+          ]
+        },
+        {
+          "id": "web-client-activated-renderer",
+          "kind": "feature",
+          "importance": "medium",
+          "title": {
+            "zh": "English only",
+            "en": "Web clients serve the activated renderer pack"
+          },
+          "summary": {
+            "zh": "/mobile English only /desktop English onlyEnglish onlyEnglish only renderer English onlyEnglish onlyEnglish only miko bundle pullEnglish onlyEnglish onlyEnglish only",
+            "en": "/mobile and /desktop no longer hard-bind to the source tree: an injected renderer directory is required when provided, otherwise you are guided to run miko bundle pull. Packaged desktop remote pages now follow the hot-updated activated renderer."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "60e8ad9ce",
+              "title": "feat(server): English only renderer English only"
+            }
+          ]
+        },
+        {
+          "id": "data-directory-epoch-gate",
+          "kind": "migration",
+          "importance": "high",
+          "title": {
+            "zh": "English only epochEnglish onlyEnglish only",
+            "en": "Data-directory epoch blocks older kernels"
+          },
+          "summary": {
+            "zh": "English only epoch English onlyEnglish onlyEnglish only epoch English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Each data directory now carries a monotonic epoch stamp. A lower-epoch kernel refuses to open it, with an explicit override available when you accept the risk. Ordinary version rollbacks are unaffected."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "9f94d1451",
+              "title": "feat(server): English only epoch English onlyEnglish onlyEnglish only"
+            }
+          ]
+        },
+        {
+          "id": "stop-full-session-tree",
+          "kind": "fix",
+          "importance": "high",
+          "title": {
+            "zh": "English only",
+            "en": "Stop cancels the full session execution tree"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Stop now reliably cancels tools, subagents, workflows, terminals, browsers, and related session work, then unlocks the chat instead of silently leaving work running."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "56c6078da",
+              "title": "fix(session): stop the full session execution tree"
+            }
+          ]
+        },
+        {
+          "id": "update-download-and-pointer-reliability",
+          "kind": "fix",
+          "importance": "high",
+          "title": {
+            "zh": "English only",
+            "en": "Update download stall fuse and pointer serialization"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Large downloads abort and rotate mirrors after prolonged near-zero progress or a hard per-attempt timeout. In-process pointer writes are serialized so crash-retry and activation can no longer erase a confirmed update."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "2262156e3",
+              "title": "fix(update): English only"
+            },
+            {
+              "type": "commit",
+              "ref": "27f7dcfe2",
+              "title": "fix(update): English onlyEnglish onlyEnglish only"
+            }
+          ]
+        },
+        {
+          "id": "memory-weekly-daily-dates",
+          "kind": "fix",
+          "importance": "medium",
+          "title": {
+            "zh": "English only",
+            "en": "Weekly memory keeps per-day date headings"
+          },
+          "summary": {
+            "zh": "English only ISO English onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Weekly memory compiled into the prompt keeps valid per-day ISO date headings instead of flattening away the daily structure."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "db86b965a",
+              "title": "fix(memory): preserve daily dates in weekly prompt"
+            }
+          ]
+        },
+        {
+          "id": "same-home-kernel-mutex",
+          "kind": "improvement",
+          "importance": "medium",
+          "title": {
+            "zh": "English only",
+            "en": "Only one kernel may own the same data directory"
+          },
+          "summary": {
+            "zh": "English only token English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Startup probes any recorded kernel with token auth. If it is still alive, launch is refused with guidance to quit the other process; if not, stale lock files are cleaned automatically so two processes do not share one data directory."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "b1b0bdfc2",
+              "title": "feat(server): English onlyEnglish onlytoken English onlyEnglish only"
+            }
+          ]
+        },
+        {
+          "id": "no-post-update-startup-popup",
+          "kind": "improvement",
+          "importance": "medium",
+          "title": {
+            "zh": "English only",
+            "en": "No post-update startup announcement popup"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "After an application or component update, startup opens the UI directly. Update history remains available in About."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "8ff85934d",
+              "title": "fix(desktop): remove post-update startup popup"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "tag": "v0.391.2",
+      "version": "0.391.2",
+      "previousTag": "v0.390.0",
+      "generatedAt": "2026-07-12T06:00:00.000Z",
+      "noUserFacingChanges": false,
+      "summary": {
+        "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyMac English only JIT English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only Agent English onlyEnglish only",
+        "en": "This release makes updates more reliable and visible: macOS hot updates no longer crash the server at launch due to missing JIT entitlements; update checks compare the origin and mirror in parallel and reject channel-mismatched manifests; older shelf content is no longer offered as an update; crash fallbacks surface a clear notice; and memory reminders only reach sessions owned by the source Agent."
+      },
+      "counts": {
+        "feature": 1,
+        "fix": 4,
+        "improvement": 0,
+        "migration": 0
+      },
+      "source": {
+        "owner": "shubhu121",
+        "repo": "miko-agent",
+        "commitRange": "v0.390.0..v0.391.2",
+        "releaseUrl": "https://github.com/shubhu121/miko-agent/releases/tag/v0.391.2",
+        "releaseNotes": ""
+      },
+      "items": [
+        {
+          "id": "crash-fallback-user-notice",
+          "kind": "feature",
+          "importance": "high",
+          "title": {
+            "zh": "English only",
+            "en": "Clear notice after a crash fallback"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "When repeated launch failures trigger an automatic rollback, the sidebar shows a one-time notice explaining which version failed, which version was restored, and that the bad version is quarantined from automatic retry."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "367dd3b22",
+              "title": "feat(update): English only"
+            }
+          ]
+        },
+        {
+          "id": "macos-server-jit-entitlement",
+          "kind": "fix",
+          "importance": "high",
+          "title": {
+            "zh": "English only Mac English only",
+            "en": "Fix macOS hot-update server crashing on launch"
+          },
+          "summary": {
+            "zh": "English only Node English only JIT English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "The bundled Node binary now receives JIT entitlements during Developer ID signing, with a pre-pack launch smoke test so a missing executable-memory entitlement can no longer crash the server right after a hot update."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "fc5d17360",
+              "title": "fix(build): macOS server English only node English only JIT entitlement English only"
+            }
+          ]
+        },
+        {
+          "id": "github-channel-manifest-checks",
+          "kind": "fix",
+          "importance": "high",
+          "title": {
+            "zh": "English only",
+            "en": "Dual-source update manifests with channel checks"
+          },
+          "summary": {
+            "zh": "GitHub update manifest checks are verified before use.",
+            "en": "Update checks query GitHub, verify manifest signatures, and reject manifests whose declared channel does not match the requested channel."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "7213d3494",
+              "title": "fix(update): English onlyEnglish onlyEnglish onlyEnglish onlyEnglish only"
+            }
+          ]
+        },
+        {
+          "id": "reject-older-shelf-content",
+          "kind": "fix",
+          "importance": "medium",
+          "title": {
+            "zh": "English only",
+            "en": "Older shelf content is no longer treated as an update"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "If shelf content is older than the locally active version, both check and download now treat the install as current, preventing an older train from being offered as an update and applied as a downgrade."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "82330a386",
+              "title": "fix(update): English only"
+            }
+          ]
+        },
+        {
+          "id": "memory-reminder-agent-scope",
+          "kind": "fix",
+          "importance": "medium",
+          "title": {
+            "zh": "English only Agent",
+            "en": "Memory reminders stay on the owning Agent"
+          },
+          "summary": {
+            "zh": "English only Agent English onlyEnglish onlyEnglish only Agent English onlyEnglish only",
+            "en": "Memory fact changes are now injected only into sessions owned by the source Agent, instead of being broadcast to every Agent's sessions."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "33af92e1b",
+              "title": "fix(reminder): scope memory facts to owning agent"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "tag": "v0.390.0",
+      "version": "0.390.0",
+      "previousTag": "v0.389.0",
+      "generatedAt": "2026-07-12T03:07:07.000Z",
+      "noUserFacingChanges": false,
+      "summary": {
+        "zh": "Miko English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+        "en": "Miko now evaluates component updates more accurately: same-version content is no longer reported as a new update, while components that require a newer app shell are blocked before download with a clear upgrade prompt. This release also uses one shared renderer update archive across all four platforms to prevent same-version content drift."
+      },
+      "counts": {
+        "feature": 1,
+        "fix": 1,
+        "improvement": 0,
+        "migration": 0
+      },
+      "source": {
+        "owner": "shubhu121",
+        "repo": "miko-agent",
+        "commitRange": "v0.389.0..v0.390.0",
+        "releaseUrl": "https://github.com/shubhu121/miko-agent/releases/tag/v0.390.0",
+        "releaseNotes": ""
+      },
+      "items": [
+        {
+          "id": "same-version-update-detection",
+          "kind": "fix",
+          "importance": "high",
+          "title": {
+            "zh": "English only",
+            "en": "Same-version content no longer appears as an update"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyMiko English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "When the active local content already matches the update train version, Miko now treats it as current instead of offering a duplicate update that cannot be applied. All four platforms also reuse the same renderer archive, preventing build-time metadata from producing different hashes for the same version."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "e10c8afcf",
+              "title": "fix(update): English only\"English only\""
+            },
+            {
+              "type": "commit",
+              "ref": "23acede2f",
+              "title": "feat(build): renderer English only CI English onlyEnglish onlyEnglish only"
+            }
+          ]
+        },
+        {
+          "id": "component-update-contract-gates",
+          "kind": "feature",
+          "importance": "high",
+          "title": {
+            "zh": "English only",
+            "en": "Incompatible component updates are blocked early"
+          },
+          "summary": {
+            "zh": "English only API English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only“English only”English onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Component updates now enforce their required interface API and server protocol versions. If the installed app shell is too old, both update checks and downloads stop with the existing clear prompt to update the app itself, avoiding a failure after download."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "9b2a6578f",
+              "title": "feat(update): English only"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "tag": "v0.389.0",
+      "version": "0.389.0",
+      "previousTag": "v0.386.6",
+      "generatedAt": "2026-07-11T21:30:47.000Z",
+      "noUserFacingChanges": false,
+      "summary": {
+        "zh": "Miko English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only Windows English onlyEnglish only",
+        "en": "Miko's component updates are now fully user-initiated: background checks no longer download or modify local files, and users can start an available update from the update card or About page while following its progress. This release also protects the active version directory and improves Windows scrollbars."
+      },
+      "counts": {
+        "feature": 1,
+        "fix": 2,
+        "improvement": 1,
+        "migration": 0
+      },
+      "source": {
+        "owner": "shubhu121",
+        "repo": "miko-agent",
+        "commitRange": "v0.386.6..v0.389.0",
+        "releaseUrl": "https://github.com/shubhu121/miko-agent/releases/tag/v0.389.0",
+        "releaseNotes": ""
+      },
+      "items": [
+        {
+          "id": "user-initiated-component-updates",
+          "kind": "feature",
+          "importance": "high",
+          "title": {
+            "zh": "English only",
+            "en": "Users decide when component updates begin"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Background and manual checks now only detect new content instead of silently downloading or applying it. When an update is available, users can start it from the update card or About page and follow download, verification, and application progress."
+          },
+          "details": [
+            {
+              "zh": "English onlyEnglish onlyEnglish only 304 English onlyEnglish only",
+              "en": "Re-published identical content is recognized as already current, while a temporary 304 response no longer clears the previously recorded update or error state."
+            }
+          ],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "074584a22",
+              "title": "feat(update): English onlyEnglish onlyEnglish only"
+            },
+            {
+              "type": "commit",
+              "ref": "v0.389.0",
+              "title": "feat(update): English onlyEnglish onlyEnglish only"
+            }
+          ]
+        },
+        {
+          "id": "atomic-protected-update-activation",
+          "kind": "fix",
+          "importance": "high",
+          "title": {
+            "zh": "English only",
+            "en": "Updates no longer damage the active version"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "New content is now fully extracted and verified in a temporary directory before atomically replacing the old one. Version directories still referenced by any update channel are protected, preserving the working installation when activation fails."
+          },
+          "details": [
+            {
+              "zh": "English onlyEnglish onlyMiko English onlyEnglish onlyEnglish onlyEnglish only",
+              "en": "If a new train reuses the same directory name with identical content, Miko reuses the existing directory; conflicting content is rejected instead of overwriting it."
+            }
+          ],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "2d765fc88",
+              "title": "fix(update): stop deleting the live version dir before the new one is ready"
+            }
+          ]
+        },
+        {
+          "id": "active-content-version-display",
+          "kind": "fix",
+          "importance": "medium",
+          "title": {
+            "zh": "English only",
+            "en": "Displayed versions match the active content"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "The update card, About page, and post-update announcement now consistently show the active content version, avoiding mismatches between the application shell and the interface or server content in use."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "v0.389.0",
+              "title": "feat(update): English onlyEnglish onlyEnglish only"
+            }
+          ]
+        },
+        {
+          "id": "windows-scrollbar-polish",
+          "kind": "improvement",
+          "importance": "medium",
+          "title": {
+            "zh": "Windows English only",
+            "en": "Quieter Windows scrollbars"
+          },
+          "summary": {
+            "zh": "Windows English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlymacOSEnglish onlyLinux English onlyEnglish only",
+            "en": "Windows scrollbar thumbs now hide after scrolling stops, and native arrow buttons have been removed for a cleaner desktop interface. macOS, Linux, and web behavior is unchanged."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "ab70ee510",
+              "title": "feat(ui): auto-hide Windows scrollbars while idle"
+            },
+            {
+              "type": "commit",
+              "ref": "437230181",
+              "title": "fix(ui): remove Windows scrollbar arrow buttons"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "tag": "v0.386.6",
+      "version": "0.386.6",
+      "previousTag": "v0.386.5",
+      "generatedAt": "2026-07-11T15:05:00.000Z",
+      "noUserFacingChanges": false,
+      "summary": {
+        "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+        "en": "Fixes the shell-version floor for component updates so new update trains no longer require the shell version to match the train version exactly, allowing already-installed clients to keep receiving component updates."
+      },
+      "counts": {
+        "feature": 0,
+        "fix": 1,
+        "improvement": 0,
+        "migration": 0
+      },
+      "source": {
+        "owner": "shubhu121",
+        "repo": "miko-agent",
+        "commitRange": "v0.386.5..d7d48c2cc",
+        "releaseUrl": "https://github.com/shubhu121/miko-agent/releases/tag/v0.386.6",
+        "releaseNotes": ""
+      },
+      "items": [
+        {
+          "id": "train-min-shell-compat-floor",
+          "kind": "fix",
+          "importance": "high",
+          "title": {
+            "zh": "English only",
+            "en": "Update trains use a fixed shell compatibility floor"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "When publishing update trains, the minimum shell version is now a manually maintained compatibility floor instead of the train version itself, so each new train no longer blocks existing clients."
+          },
+          "details": [
+            {
+              "zh": "English only 0.386.5English onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+              "en": "The current floor is 0.386.5, matching the live train; raise it only when train contents start depending on capabilities older shells cannot run."
+            }
+          ],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "d7d48c2cc",
+              "title": "fix(release): use a fixed shell compatibility floor for train manifests"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "tag": "v0.386.5",
+      "version": "0.386.5",
+      "previousTag": "v0.385.11",
+      "generatedAt": "2026-07-11T13:16:00.000Z",
+      "noUserFacingChanges": false,
+      "summary": {
+        "zh": "Miko English onlyEnglish onlyEnglish onlyEnglish onlyEnglish only Windows English onlyEnglish only",
+        "en": "Miko now has a complete signed publishing pipeline for component updates, allowing installed clients to safely receive server and renderer updates. This release also fixes Windows installation checks and update-history dialog scrolling."
+      },
+      "counts": {
+        "feature": 1,
+        "fix": 2,
+        "improvement": 0,
+        "migration": 0
+      },
+      "source": {
+        "owner": "shubhu121",
+        "repo": "miko-agent",
+        "commitRange": "v0.385.11..e837e3ac1",
+        "releaseUrl": "https://github.com/shubhu121/miko-agent/releases/tag/v0.386.5",
+        "releaseNotes": ""
+      },
+      "items": [
+        {
+          "id": "signed-hot-update-publishing",
+          "kind": "feature",
+          "importance": "high",
+          "title": {
+            "zh": "English only",
+            "en": "Signed component updates can now be published"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Each release now publishes server and renderer archives and produces signed, resumable update trains for stable and beta channels, so installed clients can safely discover and download component updates."
+          },
+          "details": [
+            {
+              "zh": "English onlyEnglish onlyEnglish onlyEnglish only",
+              "en": "Interrupted publishing can resume from existing assets without duplicating or rolling back update sequence numbers."
+            },
+            {
+              "zh": "English onlyEnglish onlyEnglish onlyEnglish only",
+              "en": "Failures while reading remote release state now stop explicitly instead of being mistaken for a first publication."
+            }
+          ],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "1c8762d9f",
+              "title": "feat(release): add hot-update train publishing pipeline"
+            },
+            {
+              "type": "commit",
+              "ref": "def20a07c",
+              "title": "fix(release): only treat gh's missing-release error as release-absent"
+            }
+          ]
+        },
+        {
+          "id": "windows-seed-install-integrity",
+          "kind": "fix",
+          "importance": "high",
+          "title": {
+            "zh": "Windows English only",
+            "en": "Windows installation checks support the new component archives"
+          },
+          "summary": {
+            "zh": "Windows English only seed English onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "The Windows installer and pre-launch checks now validate the new signed seed archives instead of incorrectly reporting corruption while looking for retired loose server files."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "21752a0d8",
+              "title": "fix(windows): install integrity checks use the seed archive layout"
+            }
+          ]
+        },
+        {
+          "id": "settings-update-history-scroll",
+          "kind": "fix",
+          "importance": "medium",
+          "title": {
+            "zh": "English only",
+            "en": "Update history scrolls correctly inside Settings"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "The update-history dialog now stays within the visible Settings panel and scrolls long release histories inside the dialog."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "3edd650fd",
+              "title": "fix(settings): constrain update history to settings panel"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "tag": "v0.385.11",
+      "version": "0.385.11",
+      "previousTag": "v0.380.10",
+      "generatedAt": "2026-07-11T10:53:36.000Z",
+      "noUserFacingChanges": false,
+      "summary": {
+        "zh": "Miko English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+        "en": "Miko can now safely stage component updates in the background and apply them in place, with automatic rollback and one-click repair when needed. This release also brings a systematic cleanup to Settings, update history, and new-session composing."
+      },
+      "counts": {
+        "feature": 3,
+        "fix": 2,
+        "improvement": 3,
+        "migration": 0
+      },
+      "source": {
+        "owner": "shubhu121",
+        "repo": "miko-agent",
+        "commitRange": "v0.380.10..a9df4e87e",
+        "releaseUrl": "https://github.com/shubhu121/miko-agent/releases/tag/v0.385.11",
+        "releaseNotes": ""
+      },
+      "items": [
+        {
+          "id": "signed-component-trains",
+          "kind": "feature",
+          "importance": "high",
+          "title": {
+            "zh": "English onlyEnglish onlyEnglish only",
+            "en": "Component updates stage quietly and apply in place"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Server and renderer components are verified and staged as one signed update, then applied with an in-place refresh instead of turning every component upgrade into a full reinstall."
+          },
+          "details": [
+            {
+              "zh": "English onlyEnglish onlyEnglish onlyEnglish only",
+              "en": "An update becomes available only after both component sets are fully downloaded and verified."
+            },
+            {
+              "zh": "English onlyEnglish onlyEnglish onlyEnglish only",
+              "en": "Settings and the sidebar sticker share one update state, with stable and beta channels kept in sync."
+            }
+          ],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "a9df4e87e",
+              "title": "feat(runtime): ship signed artifact trains and unify settings"
+            }
+          ]
+        },
+        {
+          "id": "component-rollback-repair",
+          "kind": "feature",
+          "importance": "high",
+          "title": {
+            "zh": "English onlyEnglish onlyEnglish only",
+            "en": "Automatic rollback and manual component repair"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyMiko English onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "If new components repeatedly fail to start, Miko quarantines the bad version and returns to the previous working set. A repair action is also available from the tray and command line."
+          },
+          "details": [
+            {
+              "zh": "English onlyEnglish only",
+              "en": "Both server and renderer startup are covered by crash counting and rollback protection."
+            },
+            {
+              "zh": "English onlyEnglish only",
+              "en": "Cleanup removes only old component versions that are no longer referenced by any update channel."
+            }
+          ],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "a9df4e87e",
+              "title": "feat(runtime): ship signed artifact trains and unify settings"
+            }
+          ]
+        },
+        {
+          "id": "release-history-anthology",
+          "kind": "feature",
+          "importance": "medium",
+          "title": {
+            "zh": "English only",
+            "en": "A clearer update history across releases"
+          },
+          "summary": {
+            "zh": "“English only”English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "The About page now shows bilingual notes for the five newest published releases, while first-launch announcements collect every unread digest when an upgrade spans multiple versions."
+          },
+          "details": [
+            {
+              "zh": "English onlyEnglish onlyEnglish onlyEnglish only",
+              "en": "If online history is unavailable, Miko clearly falls back to the offline history bundled with the app."
+            }
+          ],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "a9df4e87e",
+              "title": "feat(runtime): ship signed artifact trains and unify settings"
+            }
+          ]
+        },
+        {
+          "id": "github-update-source",
+          "kind": "improvement",
+          "importance": "medium",
+          "title": {
+            "zh": "English only",
+            "en": "GitHub update source"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish only GitHubEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Component updates use GitHub for stable and beta selection across download, activation, and rollback."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "a9df4e87e",
+              "title": "feat(runtime): ship signed artifact trains and unify settings"
+            }
+          ]
+        },
+        {
+          "id": "settings-layout-primitives",
+          "kind": "improvement",
+          "importance": "high",
+          "title": {
+            "zh": "English only",
+            "en": "Settings now follows one consistent layout system"
+          },
+          "summary": {
+            "zh": "English only 884px English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "The Settings window now keeps a fixed 884px shell instead of changing width between tabs. Cards, rows, toggles, and sections share consistent primitives while preserving the existing visual style."
+          },
+          "details": [
+            {
+              "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyAgentEnglish onlyEnglish onlyEnglish only",
+              "en": "Browser, Interface, Agent, Media, and other tabs now use the same content track and spacing rules."
+            },
+            {
+              "zh": "English onlyEnglish onlyEnglish onlyEnglish only",
+              "en": "Labels, descriptions, and trailing actions now align consistently across controls of the same type."
+            }
+          ],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "a9df4e87e",
+              "title": "feat(runtime): ship signed artifact trains and unify settings"
+            }
+          ]
+        },
+        {
+          "id": "pending-session-composer",
+          "kind": "fix",
+          "importance": "high",
+          "title": {
+            "zh": "English onlyEnglish onlySkill English only",
+            "en": "New-session drafts, skill badges, and send state stay in sync"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish only Skill English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Welcome and pending sessions now have stable draft identities. After restoring a draft or inserting a skill badge, the editor, send button, and submit path use the same content decision."
+          },
+          "details": [
+            {
+              "zh": "English only Skill English onlyEnglish only",
+              "en": "Skill-badge-only messages are no longer silently treated as empty."
+            },
+            {
+              "zh": "English onlyEnglish onlyEnglish onlyEnglish only",
+              "en": "A failed send from a pending session now shows an explicit error instead of doing nothing."
+            }
+          ],
+          "sources": [
+            {
+              "type": "issue",
+              "ref": "#2101",
+              "title": "Pending session and composer consistency"
+            },
+            {
+              "type": "commit",
+              "ref": "a9df4e87e",
+              "title": "feat(runtime): ship signed artifact trains and unify settings"
+            }
+          ]
+        },
+        {
+          "id": "cross-channel-component-gc",
+          "kind": "fix",
+          "importance": "high",
+          "title": {
+            "zh": "English only",
+            "en": "Beta updates no longer delete newly activated components"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Component cleanup now protects versions referenced by every channel, fixing a beta-channel first-launch failure where newly activated components could be removed by mistake."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "a9df4e87e",
+              "title": "feat(runtime): ship signed artifact trains and unify settings"
+            }
+          ]
+        },
+        {
+          "id": "first-run-preparation-splash",
+          "kind": "improvement",
+          "importance": "medium",
+          "title": {
+            "zh": "English only",
+            "en": "Clearer first-run preparation"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish only“English only”English onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "While a fresh install extracts and verifies its components, a standalone splash screen keeps showing the preparation state without depending on renderer assets that are not ready yet."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "a9df4e87e",
+              "title": "feat(runtime): ship signed artifact trains and unify settings"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "tag": "v0.380.10",
+      "version": "0.380.10",
+      "previousTag": "v0.380.9",
+      "generatedAt": "2026-07-11T00:31:45.000Z",
+      "noUserFacingChanges": false,
+      "summary": {
+        "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+        "en": "Manual context compaction now targets sessions by ID and clearly reports accepted, noop, or failed outcomes."
+      },
+      "counts": {
+        "feature": 0,
+        "fix": 1,
+        "improvement": 0,
+        "migration": 0
+      },
+      "source": {
+        "owner": "shubhu121",
+        "repo": "miko-agent",
+        "commitRange": "v0.380.9..b32b5415b",
+        "releaseUrl": "https://github.com/shubhu121/miko-agent/releases/tag/v0.380.10",
+        "releaseNotes": ""
+      },
+      "items": [
+        {
+          "id": "manual-compaction-session-id",
+          "kind": "fix",
+          "importance": "high",
+          "title": {
+            "zh": "English only ID English only",
+            "en": "Manual compaction is session-ID authoritative"
+          },
+          "summary": {
+            "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
+            "en": "Manual compaction now hits the focused session reliably and surfaces accepted, noop, or failure feedback instead of silent path-based guesses."
+          },
+          "details": [
+            {
+              "zh": "English only ID English onlyEnglish only",
+              "en": "Desktop and mobile manual compaction both resolve targets by session ID."
+            },
+            {
+              "zh": "English onlyEnglish onlyEnglish onlyEnglish only",
+              "en": "Legacy path addressing remains converted at the protocol boundary, with explicit terminal outcomes."
+            }
+          ],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "b32b5415b",
+              "title": "fix: make manual compaction session-id authoritative"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

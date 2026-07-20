@@ -1,151 +1,46 @@
 {
   "schemaVersion": 1,
-  "tag": "v0.412.7",
-  "version": "0.412.7",
-  "previousTag": "v0.407.15",
-  "generatedAt": "2026-07-18T07:57:18.524Z",
+  "tag": "v0.421.8",
+  "version": "0.421.8",
+  "previousTag": "v0.412.7",
+  "generatedAt": "2026-07-20T12:30:00.000Z",
   "noUserFacingChanges": false,
   "summary": {
-    "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyEnglish only ID English only Codex English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only image-gen English onlyEnglish only",
-    "en": "This release hardens startup and upgrades: the update progress bar now runs continuously across both server and renderer downloads; session event IDs are no longer mistaken for Codex model IDs in the catalog; failed or incomplete migrations no longer halt the whole chain, and source bytes are preserved for retry; corrupt early-epoch metadata no longer blocks launch. Media generation runtime moves into core, with a display change for sessions that used the retired image-gen plugin."
+    "zh": "This patch fixes packaged Miko releases that could fail to start because a required Pi SDK module was missing.",
+    "en": "This patch fixes packaged Miko releases that could fail to start because a required Pi SDK module was missing."
   },
   "counts": {
     "feature": 0,
-    "fix": 5,
-    "improvement": 1,
+    "fix": 1,
+    "improvement": 0,
     "migration": 0
   },
   "source": {
     "owner": "shubhu121",
     "repo": "miko-agent",
-    "commitRange": "v0.407.15..v0.412.7",
-    "releaseUrl": "https://github.com/shubhu121/miko-agent/releases/tag/v0.412.7",
+    "commitRange": "v0.412.7..HEAD",
+    "releaseUrl": "https://github.com/shubhu121/miko-agent/releases/tag/v0.421.8",
     "releaseNotes": ""
   },
   "items": [
     {
-      "id": "cumulative-update-progress",
+      "id": "package-pi-sdk-runtime",
       "kind": "fix",
       "importance": "high",
       "title": {
-        "zh": "English only",
-        "en": "Continuous update progress across both artifacts"
+        "zh": "Package the Pi SDK runtime",
+        "en": "Package the Pi SDK runtime"
       },
       "summary": {
-        "zh": "English only 0–100 English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
-        "en": "Server and renderer downloads share one continuous 0–100 progress bar, and the verify gap no longer flashes an applying state."
+        "zh": "Windows, macOS, and Linux server archives now include the Pi SDK modules required at startup.",
+        "en": "Windows, macOS, and Linux server archives now include the Pi SDK modules required at startup."
       },
       "details": [],
       "sources": [
         {
           "type": "commit",
-          "ref": "5b9dce70e",
-          "title": "fix(updater): report cumulative progress across both update artifacts"
-        }
-      ]
-    },
-    {
-      "id": "repair-codex-event-id-models",
-      "kind": "fix",
-      "importance": "high",
-      "title": {
-        "zh": "English only Codex English only ID",
-        "en": "Stop treating session event IDs as Codex model IDs"
-      },
-      "summary": {
-        "zh": "English only ID English only IDEnglish onlyEnglish onlyEnglish only",
-        "en": "Session event IDs are no longer treated as model IDs, and an upgrade repair removes the polluted catalog entries."
-      },
-      "details": [],
-      "sources": [
-        {
-          "type": "commit",
-          "ref": "5b5abafdd",
-          "title": "fix(models): stop treating session event ids as Codex model ids"
-        }
-      ]
-    },
-    {
-      "id": "migrations-survive-partial-failure",
-      "kind": "fix",
-      "importance": "high",
-      "title": {
-        "zh": "English only",
-        "en": "Keep startup available across partial migration failures"
-      },
-      "summary": {
-        "zh": "English onlyEnglish onlyEnglish onlyEnglish only",
-        "en": "One failed migration no longer stops the rest of the chain; failed items retry on the next launch."
-      },
-      "details": [],
-      "sources": [
-        {
-          "type": "commit",
-          "ref": "21a853be1",
-          "title": "fix(migrations): keep startup available across partial failures"
-        }
-      ]
-    },
-    {
-      "id": "preserve-migration-sources-on-retry",
-      "kind": "fix",
-      "importance": "high",
-      "title": {
-        "zh": "English only",
-        "en": "Preserve legacy sources during migration retries"
-      },
-      "summary": {
-        "zh": "English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
-        "en": "Preference, config-scope, provider, and registry migrations keep source bytes and defer dependent work when inputs are unreadable or incomplete, instead of cleaning up and blocking startup."
-      },
-      "details": [],
-      "sources": [
-        {
-          "type": "commit",
-          "ref": "32b08808b",
-          "title": "fix(migrations): preserve legacy sources during retries"
-        }
-      ]
-    },
-    {
-      "id": "tolerate-epoch-one-metadata-faults",
-      "kind": "fix",
-      "importance": "high",
-      "title": {
-        "zh": "English only",
-        "en": "Tolerate corrupt early-epoch metadata"
-      },
-      "summary": {
-        "zh": "English only epoch English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
-        "en": "Without higher-epoch evidence, corrupt early-epoch metadata is logged and ordinary startup continues."
-      },
-      "details": [],
-      "sources": [
-        {
-          "type": "commit",
-          "ref": "75773c1e8",
-          "title": "fix(startup): tolerate unproven epoch-one metadata faults"
-        }
-      ]
-    },
-    {
-      "id": "media-runtime-into-core",
-      "kind": "improvement",
-      "importance": "medium",
-      "title": {
-        "zh": "English only",
-        "en": "Move media generation runtime into core"
-      },
-      "summary": {
-        "zh": "English only image-gen English onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish onlyEnglish only",
-        "en": "The legacy image-gen plugin is retired; its historical sessions show plain tool results instead of inline images, and the unavailable error code is renamed."
-      },
-      "details": [],
-      "sources": [
-        {
-          "type": "commit",
-          "ref": "94275ae74",
-          "title": "refactor(media): retire legacy image-gen plugin, move media runtime into core"
+          "ref": "HEAD",
+          "title": "fix: package Pi SDK runtime in server archives"
         }
       ]
     }

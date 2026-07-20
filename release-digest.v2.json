@@ -3,6 +3,54 @@
   "entries": [
     {
       "schemaVersion": 1,
+      "tag": "v0.421.8",
+      "version": "0.421.8",
+      "previousTag": "v0.412.7",
+      "generatedAt": "2026-07-20T12:30:00.000Z",
+      "noUserFacingChanges": false,
+      "summary": {
+        "zh": "This patch fixes packaged Miko releases that could fail to start because a required Pi SDK module was missing.",
+        "en": "This patch fixes packaged Miko releases that could fail to start because a required Pi SDK module was missing."
+      },
+      "counts": {
+        "feature": 0,
+        "fix": 1,
+        "improvement": 0,
+        "migration": 0
+      },
+      "source": {
+        "owner": "shubhu121",
+        "repo": "miko-agent",
+        "commitRange": "v0.412.7..HEAD",
+        "releaseUrl": "https://github.com/shubhu121/miko-agent/releases/tag/v0.421.8",
+        "releaseNotes": ""
+      },
+      "items": [
+        {
+          "id": "package-pi-sdk-runtime",
+          "kind": "fix",
+          "importance": "high",
+          "title": {
+            "zh": "Package the Pi SDK runtime",
+            "en": "Package the Pi SDK runtime"
+          },
+          "summary": {
+            "zh": "Windows, macOS, and Linux server archives now include the Pi SDK modules required at startup.",
+            "en": "Windows, macOS, and Linux server archives now include the Pi SDK modules required at startup."
+          },
+          "details": [],
+          "sources": [
+            {
+              "type": "commit",
+              "ref": "HEAD",
+              "title": "fix: package Pi SDK runtime in server archives"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
       "tag": "v0.412.7",
       "version": "0.412.7",
       "previousTag": "v0.407.15",

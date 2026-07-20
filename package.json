@@ -1,6 +1,6 @@
 {
   "name": "miko",
-  "version": "0.412.7",
+  "version": "0.421.8",
   "type": "module",
   "description": "Miko - a personal AI companion with memory and soul",
   "license": "Apache-2.0",

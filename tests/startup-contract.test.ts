@@ -83,6 +83,15 @@ describe("local startup contract", () => {
     expect(external).toContain("@node-rs/jieba");
   });
 
+  it("keeps the Pi SDK external so its runtime packages ship with the server", () => {
+    const external = viteServerConfig.build?.rollupOptions?.external || [];
+    const piSdkExternal = external.find((entry): entry is RegExp => (
+      entry instanceof RegExp && entry.test("@earendil-works/pi-agent-core")
+    ));
+
+    expect(piSdkExternal?.test("@earendil-works/pi-coding-agent")).toBe(true);
+  });
+
   it("keeps workspace output helper statically bundleable in packaged server", () => {
     const source = fs.readFileSync(path.join(ROOT, "shared", "workspace-output.ts"), "utf-8");
 

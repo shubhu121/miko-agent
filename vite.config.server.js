@@ -35,8 +35,8 @@ export default defineConfig({
         // ws: CJS package, Rollup's CJS→ESM interop loses WebSocketServer
         // named export. Keep external — available as PI SDK transitive dep.
         "ws",
-        /^@mariozechner\/$^/,
-        /^@earendil-works\/$^/,
+        /^@mariozechner\//,
+        /^@earendil-works\//,
         "@silvia-odwyer/photon-node",
         "@larksuiteoapi/node-sdk",
         "node-telegram-bot-api",

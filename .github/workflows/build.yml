@@ -1,0 +1,464 @@
+name: Build
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+
+  renderer-box:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.15.0"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+      - name: Build renderer bundle
+        run: npm run build:renderer
+
+      - name: Build theme bundle (writes into dist-renderer/lib, must run after build:renderer)
+        run: npm run build:theme
+
+      - name: Pack renderer hot-update box
+        run: node scripts/pack-renderer-box.mjs
+
+      - name: Upload renderer box
+        uses: actions/upload-artifact@v4
+        with:
+          name: renderer-box
+          retention-days: 3
+          path: dist-renderer-artifact/renderer-*.tar.gz
+          if-no-files-found: error
+
+  build:
+    needs: renderer-box
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: dmg
+            arch: arm64
+          - os: macos-latest
+            target: dmg
+            arch: x64
+          - os: windows-latest
+            target: nsis
+            arch: x64
+          - os: ubuntu-latest
+            target: AppImage
+            arch: x64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.15.0"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+    
+        if: runner.os == 'Windows'
+        run: node scripts/download-mingit.js
+
+  
+      - name: Smoke-test MinGit
+        if: runner.os == 'Windows'
+        run: node scripts/smoke-mingit.mjs vendor/mingit
+
+      - name: Build client bundles (main + preload + renderer)
+        run: npm run build:client
+
+      - name: Materialize seed signing key
+        shell: bash
+        env:
+          MIKO_SIGN_KEY_PEM: ${{ secrets.MIKO_SIGN_KEY }}
+        run: |
+          if [ -z "$MIKO_SIGN_KEY_PEM" ]; then
+            echo "::error::MIKO_SIGN_KEY secret is missing; the seed archive MUST be signed"
+            exit 1
+          fi
+          printf '%s\n' "$MIKO_SIGN_KEY_PEM" > "$RUNNER_TEMP/miko-train-sign-key.pem"
+          echo "MIKO_SIGN_KEY=$RUNNER_TEMP/miko-train-sign-key.pem" >> "$GITHUB_ENV"
+          echo "Seed signing key materialized."
+
+    
+      - name: Setup macOS signing keychain
+        if: runner.os == 'macOS'
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASSWORD="ci-$(openssl rand -hex 12)"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          echo "$CSC_LINK" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -P "$CSC_KEY_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          security default-keychain -s "$KEYCHAIN_PATH"
+
+          # English only electron-builderEnglish onlyCSC_KEYCHAIN English only keychainEnglish onlyEnglish only
+          echo "CSC_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+     
+      - name: Mask signing identity in logs
+        if: runner.os == 'macOS'
+        run: |
+          IDENTITY=$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)"/\1/')
+          if [ -z "$IDENTITY" ]; then
+            echo "::error::No 'Developer ID Application' identity in keychain; refusing to sign without masking the identity"
+            exit 1
+          fi
+          IDENTITY_NAME="${IDENTITY#Developer ID Application: }"   # English only
+          IDENTITY_NAME="${IDENTITY_NAME% (*)}"                    # English only " (TeamID)" English only
+          if [ -z "$IDENTITY_NAME" ] || [ "$IDENTITY_NAME" = "$IDENTITY" ]; then
+            echo "::error::Failed to parse signing identity for masking; refusing to proceed"
+            exit 1
+          fi
+          echo "::add-mask::$IDENTITY_NAME"   # English only identity English onlyEnglish onlyTeamID English only ***English onlyEnglish onlyEnglish only
+          echo "::add-mask::$IDENTITY"        # English onlyEnglish onlyEnglish only identity English onlyEnglish onlyEnglish only echo English only TeamID English onlyEnglish only
+          echo "MIKO_MACHO_SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          echo "Signing identity registered for log masking and exported for seed signing."
+
+     
+      - name: Download shared renderer box
+        uses: actions/download-artifact@v4
+        with:
+          name: renderer-box
+          path: prebuilt-renderer
+
+      - name: Point seed packer at the shared renderer box
+        shell: bash
+        run: |
+          BOX=$(ls prebuilt-renderer/renderer-*.tar.gz | head -1)
+          if [ -z "$BOX" ]; then
+            echo "::error::shared renderer box missing from the renderer-box job's upload"
+            exit 1
+          fi
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            BOX_DIR=$(pwd -W)
+          else
+            BOX_DIR=$(pwd)
+          fi
+          echo "MIKO_PREBUILT_RENDERER_BOX=$BOX_DIR/$BOX" >> "$GITHUB_ENV"
+          echo "Using shared renderer box: $BOX_DIR/$BOX"
+
+      - name: Build server bundle
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            node scripts/build-server.mjs darwin ${{ matrix.arch }}
+          elif [ "$RUNNER_OS" = "Linux" ]; then
+            node scripts/build-server.mjs linux ${{ matrix.arch }}
+          else
+            node scripts/build-server.mjs win32 ${{ matrix.arch }}
+          fi
+
+      - name: Build Computer Use helper
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          MIKO_COMPUTER_USE_HELPER_ARCH=${{ matrix.arch }} node scripts/build-computer-use-helper.mjs ${{ matrix.arch }}
+
+      - name: Build Windows sandbox helper
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: node scripts/build-windows-sandbox-helper.mjs ${{ matrix.arch }}
+
+    
+      - name: Verify seed kit (macOS)
+        if: runner.os == 'macOS'
+        run: node scripts/verify-seed-kit.mjs darwin ${{ matrix.arch }}
+
+      - name: Build macOS (DMG + ZIP)
+        if: runner.os == 'macOS'
+        run: |
+          ulimit -n 65536
+          npx electron-builder --mac dmg zip --${{ matrix.arch }} --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          CSC_KEYCHAIN: ${{ env.CSC_KEYCHAIN }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Verify seed kit (Windows)
+        if: runner.os == 'Windows'
+        run: node scripts/verify-seed-kit.mjs win32 ${{ matrix.arch }}
+
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          npx electron-builder --win nsis --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+
+      - name: Verify seed kit (Linux)
+        if: runner.os == 'Linux'
+        run: node scripts/verify-seed-kit.mjs linux ${{ matrix.arch }}
+
+
+      - name: Build Linux preview packages
+        if: runner.os == 'Linux'
+        run: |
+          npx electron-builder --linux AppImage deb --${{ matrix.arch }} --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.os }}-${{ matrix.arch }}
+          retention-days: 3
+          path: |
+            dist/*.dmg
+            dist/*.zip
+            dist/*.exe
+            dist/*.AppImage
+            dist/*.deb
+            dist/latest*.yml
+            dist-server-artifact/*/server-*.tar.gz
+            dist-server-artifact/*/seed-train-*.json
+            dist-server-artifact/*/seed-train-*.json.sig
+            dist-renderer-artifact/renderer-*.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.15.0"
+
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+            echo "Release ${{ github.ref_name }} already exists, skipping create"
+          else
+            gh release create "${{ github.ref_name }}" \
+              --draft \
+              --prerelease \
+              --title "${{ github.ref_name }}" \
+              --generate-notes
+          fi
+
+      - name: Generate merged latest-mac.yml
+        run: |
+          node scripts/merge-latest-mac-yml.cjs artifacts latest-mac.yml
+
+      - name: Validate committed release digest
+        run: |
+          node scripts/validate-release-digest.mjs \
+            --tag "${{ github.ref_name }}" \
+            --file release-digest.v1.json
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+
+          echo "=== Uploading installers ==="
+          find artifacts \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' \) -print0 |
+            while IFS= read -r -d '' f; do
+              echo "  $f"
+              gh release upload "${{ github.ref_name }}" "$f" --clobber
+            done
+
+          echo "=== Uploading server hot-update archives (one per platform-arch) ==="
+          find artifacts -path '*/dist-server-artifact/*/server-*.tar.gz' -print0 |
+            while IFS= read -r -d '' f; do
+              echo "  $f"
+              gh release upload "${{ github.ref_name }}" "$f" --clobber
+            done
+
+          # Renderer archive is platform-independent AND now byte-identical across all four
+          # matrix jobs: it is built once by the renderer-box job and downloaded/reused by
+          # every platform (see scripts/pack-renderer-box.mjs and packDualKindSeed's
+          # prebuiltRendererArchive / MIKO_PREBUILT_RENDERER_BOX). Which platform's copy we
+          # publish here no longer matters for correctness — macOS arm64 is kept only to
+          # avoid widening this step's diff.
+          echo "=== Uploading renderer hot-update archive (macOS arm64 build only) ==="
+          RENDERER_TGZ=$(find artifacts -path '*installer-macos-latest-arm64*/dist-renderer-artifact/renderer-*.tar.gz' | head -1)
+          if [ -n "$RENDERER_TGZ" ]; then
+            echo "  $RENDERER_TGZ"
+            gh release upload "${{ github.ref_name }}" "$RENDERER_TGZ" --clobber
+          else
+            echo "::error::renderer hot-update archive not found from the macOS arm64 build"
+            exit 1
+          fi
+
+          echo "=== Uploading latest.yml (Windows) ==="
+          WIN_YML=$(find artifacts -name 'latest.yml' | head -1)
+          if [ -n "$WIN_YML" ]; then
+            echo "  $WIN_YML"
+            gh release upload "${{ github.ref_name }}" "$WIN_YML" --clobber
+          else
+            echo "::warning::latest.yml not found (Windows build may have failed)"
+          fi
+
+          echo "=== Uploading latest-mac.yml (merged) ==="
+          gh release upload "${{ github.ref_name }}" latest-mac.yml --clobber
+
+          echo "=== Uploading release digest ==="
+          gh release upload "${{ github.ref_name }}" release-digest.v1.json --clobber
+
+          echo "=== Uploading latest-linux.yml ==="
+          LINUX_YML=$(find artifacts -name 'latest-linux.yml' | head -1)
+          if [ -n "$LINUX_YML" ]; then
+            echo "  $LINUX_YML"
+            gh release upload "${{ github.ref_name }}" "$LINUX_YML" --clobber
+          else
+            echo "::warning::latest-linux.yml not found (Linux build may have failed)"
+          fi
+
+      - name: Verify release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          ASSETS=$(gh release view "${{ github.ref_name }}" --json assets --jq '.assets[].name')
+          echo "=== Release assets ==="
+          echo "$ASSETS"
+          echo ""
+
+          MISSING=()
+          echo "$ASSETS" | grep -qx 'latest-mac.yml' || MISSING+=("latest-mac.yml")
+          echo "$ASSETS" | grep -qx 'latest.yml' || MISSING+=("latest.yml")
+          echo "$ASSETS" | grep -qx 'latest-linux.yml' || MISSING+=("latest-linux.yml")
+          echo "$ASSETS" | grep -qx 'release-digest.v1.json' || MISSING+=("release-digest.v1.json")
+          echo "$ASSETS" | grep -qE '^Miko-.*-macOS-arm64\.dmg$' || MISSING+=("macOS-arm64.dmg")
+          echo "$ASSETS" | grep -qE '^Miko-.*-macOS-arm64\.zip$' || MISSING+=("macOS-arm64.zip")
+          echo "$ASSETS" | grep -qE '^Miko-.*-macOS-x64\.dmg$' || MISSING+=("macOS-x64.dmg")
+          echo "$ASSETS" | grep -qE '^Miko-.*-Windows-x64\.exe$' || MISSING+=("Windows-x64.exe")
+          echo "$ASSETS" | grep -qE '^Miko-.*-Linux-(x64|x86_64)\.AppImage$' || MISSING+=("Linux AppImage")
+          echo "$ASSETS" | grep -qE '^Miko-.*-Linux-(x64|amd64)\.deb$' || MISSING+=("Linux deb")
+          echo "$ASSETS" | grep -qE '^server-.*-darwin-arm64\.tar\.gz$' || MISSING+=("server darwin-arm64 hot-update archive")
+          echo "$ASSETS" | grep -qE '^server-.*-darwin-x64\.tar\.gz$' || MISSING+=("server darwin-x64 hot-update archive")
+          echo "$ASSETS" | grep -qE '^server-.*-win32-x64\.tar\.gz$' || MISSING+=("server win32-x64 hot-update archive")
+          echo "$ASSETS" | grep -qE '^server-.*-linux-x64\.tar\.gz$' || MISSING+=("server linux-x64 hot-update archive")
+          echo "$ASSETS" | grep -qE '^renderer-.*\.tar\.gz$' || MISSING+=("renderer hot-update archive")
+
+          # English onlyEnglish onlyEnglish only blockmap English only
+          if echo "$ASSETS" | grep -qE '\.blockmap$'; then
+            echo "::warning::blockmap files leaked into release (should be excluded by design):"
+            echo "$ASSETS" | grep -E '\.blockmap$'
+          fi
+
+          if [ ${#MISSING[@]} -gt 0 ]; then
+            echo ""
+            echo "::error::Missing required assets: ${MISSING[*]}"
+            echo "Release will remain as draft for manual inspection."
+            exit 1
+          fi
+          echo ""
+          echo "✓ All required assets present"
+
+      - name: Publish release (un-draft, pre-release)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "${{ github.ref_name }}" --prerelease --draft=false
+
+  publish-train:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.15.0"
+
+      - name: Materialize train signing key
+        shell: bash
+        env:
+          MIKO_SIGN_KEY_PEM: ${{ secrets.MIKO_SIGN_KEY }}
+        run: |
+          if [ -z "$MIKO_SIGN_KEY_PEM" ]; then
+            echo "::error::MIKO_SIGN_KEY secret is missing; the train manifest MUST be signed"
+            exit 1
+          fi
+          printf '%s\n' "$MIKO_SIGN_KEY_PEM" > "$RUNNER_TEMP/miko-train-sign-key.pem"
+          echo "MIKO_SIGN_KEY=$RUNNER_TEMP/miko-train-sign-key.pem" >> "$GITHUB_ENV"
+
+      - name: Publish stable train
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/publish-train.mjs --tag "${{ github.ref_name }}" --channel stable
+
+      - name: Publish beta train
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/publish-train.mjs --tag "${{ github.ref_name }}" --channel beta
+
+      - name: Publish train summary
+        if: always()
+        run: |
+          {
+            echo "### Hot-update train publish — ${{ github.ref_name }}"
+            echo ""
+            if [ "${{ job.status }}" = "success" ]; then
+              echo "Both the stable and beta channel pointers were updated."
+            else
+              echo "This job did not finish. The installer release for ${{ github.ref_name }} is unaffected"
+              echo "(published by the separate, already-completed \`release\` job)."
+              echo ""
+              echo "To retry: re-run this job — the publish script detects and safely resumes a partially"
+              echo "created train release — or trigger the **Publish Train** workflow manually with"
+              echo "\`tag=${{ github.ref_name }}\` and \`channel=stable\`, then again with \`channel=beta\`."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

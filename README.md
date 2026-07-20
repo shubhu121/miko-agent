@@ -154,17 +154,4 @@ npm run typecheck
 
 - [tw93/kami](https://github.com/tw93/kami): the progressive-disclosure structure of the beautify plugin's HTML aesthetic guide (a router entry with flat on-demand sections) was inspired by this project.
 
-## License
 
-[Apache License 2.0](LICENSE)
-
-## Links
-
-> The repository and release URLs intentionally remain under the legacy `miko-agent` path during the current migration. The repository rename is a separate later step.
-
-- [Homepage](https://miko-agent.com)
-- [Report an Issue](https://github.com/shubhu121/miko-agent/issues)
-- [Security](https://github.com/shubhu121/miko-agent/security)
-- [Security Policy](SECURITY.md)
-- [Plugin Development](PLUGINS.md)
-- [Contributing](CONTRIBUTING.md)

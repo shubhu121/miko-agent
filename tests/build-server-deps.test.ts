@@ -136,7 +136,7 @@ describe("build-server external dependency packaging", () => {
       "  loadDict(dict) { this.customDict = dict.toString('utf8'); }",
       "  cutForSearch() {",
       "    if (!this.customDict.includes('session_search')) throw new Error('missing custom dict');",
-      "This feature is available in English only.",
+      "    return ['session_search'];",
       "  }",
       "}",
       "module.exports = { Jieba };",

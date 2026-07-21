@@ -95,16 +95,13 @@ export function collectWorkspaceInstructionFiles({ cwd, workspaceContext }: { cw
   return files;
 }
 
-export function formatWorkspaceInstructionFiles(files: any, { locale }: { locale?: any } = {}) {
+export function formatWorkspaceInstructionFiles(files: any, _options: { locale?: any } = {}) {
   const items = Array.isArray(files) ? files : [];
   if (items.length === 0) return "";
-  const isZh = String(locale || "").startsWith("zh");
   const body = items.map((file) => {
     const content = typeof file.content === "string"
       ? file.content.trim()
-      : (isZh
-        ? "This feature is available in English only."
-        : `Could not read this file: ${file.error || "unknown error"}`);
+      : `Could not read this file: ${file.error || "unknown error"}`;
     return [
       `### ${file.filename || path.basename(file.path || "")}`,
       file.path ? `Path: ${file.path}` : "",
@@ -113,9 +110,7 @@ export function formatWorkspaceInstructionFiles(files: any, { locale }: { locale
     ].filter((line, index) => index !== 1 || line).join("\n");
   }).join("\n\n");
 
-  return isZh
-    ? "This feature is available in English only."
-    : `\n## Workspace Instructions\n\nThe following content comes from AGENTS.md / CLAUDE.md files in the primary workbench's directory chain. Treat them as project-level working rules for this workspace context.\n\n${body}`;
+  return `\n## Workspace Instructions\n\nThe following content comes from AGENTS.md / CLAUDE.md files in the primary workbench's directory chain. Treat them as project-level working rules for this workspace context.\n\n${body}`;
 }
 
 export function buildWorkspaceInstructionPrompt({ cwd, workspaceContext, locale }: { cwd?: string; workspaceContext?: unknown; locale?: string } = {}) {

@@ -105,7 +105,7 @@ describe("SessionCoordinator", () => {
   });
 
   afterEach(() => {
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
   });
 
   it("builds the session prompt with path-scoped memory without mutating the agent session flag", async () => {
@@ -221,15 +221,14 @@ describe("SessionCoordinator", () => {
     expect(createArgs.resourceLoader.getSystemPrompt()).toBe("stable agent base");
     const append = createArgs.resourceLoader.getAppendSystemPrompt();
     const joinedAppend = append.join("\n\n");
-    expect(joinedAppend).toContain("This feature is available in English only.");
-    expect(joinedAppend).toContain("This feature is available in English only.");
-    expect(joinedAppend).toContain("This feature is available in English only.");
+    expect(joinedAppend).toContain("## Workspace Scope");
+    expect(joinedAppend).toContain(`Primary workbench: ${newCwd}`);
+    expect(joinedAppend).toContain("External workspace folders");
     expect(joinedAppend).toContain(externalFolder);
-    expect(joinedAppend).toContain("This feature is available in English only.");
+    expect(joinedAppend).toContain("## Workspace Instructions");
     expect(joinedAppend).toContain("SESSION_INSTRUCTION_BEACON");
-    expect(joinedAppend.indexOf("This feature is available in English only.")).toBeLessThan(joinedAppend.indexOf("This feature is available in English only."));
-    expect(joinedAppend).not.toContain("This feature is available in English only.");
-    expect(joinedAppend).not.toContain("This feature is available in English only.");
+    expect(joinedAppend.indexOf(`Primary workbench: ${newCwd}`)).toBeLessThan(joinedAppend.indexOf("## Workspace Instructions"));
+    expect(joinedAppend).not.toContain(oldCwd);
   });
 
   it("restores the missing default workspace only for fresh sessions using the configured home cwd", async () => {
@@ -1224,7 +1223,7 @@ describe("SessionCoordinator", () => {
     ].join("\n"));
     const visionBridge = new VisionBridge({
       resolveVisionConfig: () => ({
-        model: { id: "qwen-vl", provider: "dashscope", input: ["text", "image"] },
+        model: { id: "gpt-4o", provider: "openai", input: ["text", "image"] },
         api: "openai-completions",
         api_key: "sk-test",
         base_url: "https://example.test/v1",
@@ -2100,7 +2099,7 @@ describe("SessionCoordinator", () => {
       }),
     );
     const appendPrompt = createAgentSessionMock.mock.calls[0][0].resourceLoader.getAppendSystemPrompt();
-    expect(appendPrompt.join("\n")).toContain("This feature is available in English only.");
+    expect(appendPrompt.join("\n")).toContain("External workspace folders");
     expect(appendPrompt.join("\n")).toContain(extra);
 
     const meta = JSON.parse(fs.readFileSync(path.join(agent.sessionDir, "session-meta.json"), "utf-8"));
@@ -2169,8 +2168,8 @@ describe("SessionCoordinator", () => {
     await coordinator.createSession(null, tempDir, true);
 
     const appendPrompt = createAgentSessionMock.mock.calls[0][0].resourceLoader.getAppendSystemPrompt();
-    expect(appendPrompt.join("\n")).toContain("This feature is available in English only.");
-    expect(appendPrompt.join("\n")).toContain("This feature is available in English only.");
+    expect(appendPrompt.join("\n")).toContain("If you are using a DeepSeek model");
+    expect(appendPrompt.join("\n")).toContain("reasoning_content / thinking");
   });
 
   it("restores the original prompt snapshot instead of rebuilding from current agent state", async () => {
@@ -2571,13 +2570,13 @@ describe("SessionCoordinator", () => {
 
     const appendPrompt = createAgentSessionMock.mock.calls[1][0].resourceLoader.getAppendSystemPrompt().join("\n");
     expect(appendPrompt).toContain("BASE APPEND V1");
-    expect(appendPrompt).toContain("This feature is available in English only.");
+    expect(appendPrompt).toContain("If you are using a DeepSeek model");
     expect(appendPrompt).not.toContain("BASE APPEND V2");
   });
 
   it("does not add the DeepSeek prompt patch when a non-DeepSeek session later switches models", async () => {
     const sessionFile = path.join(tempDir, "agents", "miko", "sessions", "non-deepseek.jsonl");
-    const qwenModel = { id: "qwen3.6-max-preview", provider: "dashscope", reasoning: true };
+    const qwenModel = { id: "qwen3.6-max-preview", provider: "openrouter", reasoning: true };
     const deepseekModel = { id: "deepseek-v4-pro", provider: "deepseek", reasoning: true };
     let currentModel = qwenModel;
     const session = {
@@ -2634,7 +2633,7 @@ describe("SessionCoordinator", () => {
     session.model = deepseekModel;
 
     const appendPrompt = createAgentSessionMock.mock.calls[0][0].resourceLoader.getAppendSystemPrompt();
-    expect(appendPrompt.join("\n")).not.toContain("This feature is available in English only.");
+    expect(appendPrompt.join("\n")).not.toContain("If you are using a DeepSeek model");
   });
 
   it("blocks image prompts for text-only models when auxiliary vision is disabled", async () => {
@@ -2905,15 +2904,15 @@ describe("SessionCoordinator", () => {
   });
 
   it("forwards direct audio prompts through the existing Pi SDK media option", async () => {
-    const sessionFile = path.join(tempDir, "mimo-audio.jsonl");
+    const sessionFile = path.join(tempDir, "openai-audio.jsonl");
     const sessionPrompt = vi.fn();
     const beginCurrentTurnNativeMedia = vi.fn(() => ({ id: 1, sessionPath: sessionFile }));
     const endCurrentTurnNativeMedia = vi.fn();
-    const mimoAudioModel = {
-      id: "mimo-v2.5",
-      provider: "mimo",
+    const openAiAudioModel = {
+      id: "gpt-4o-audio-preview",
+      provider: "openai",
       api: "openai-completions",
-      baseUrl: "https://api.xiaomimimo.com/v1",
+      baseUrl: "https://api.openai.com/v1",
       input: ["text", "audio"],
     };
     const agent = {
@@ -2933,7 +2932,7 @@ describe("SessionCoordinator", () => {
         subscribe: vi.fn(() => vi.fn()),
         setActiveToolsByName: vi.fn(),
         prompt: sessionPrompt,
-        model: mimoAudioModel,
+        model: openAiAudioModel,
       },
     });
 
@@ -2942,8 +2941,8 @@ describe("SessionCoordinator", () => {
       getAgent: () => agent,
       getActiveAgentId: () => "miko",
       getModels: () => ({
-        currentModel: mimoAudioModel,
-        availableModels: [mimoAudioModel],
+        currentModel: openAiAudioModel,
+        availableModels: [openAiAudioModel],
         authStorage: {},
         modelRegistry: {},
         resolveThinkingLevel: () => "medium",
@@ -3537,7 +3536,7 @@ describe("SessionCoordinator", () => {
 
     expect(manager.appendMessage).toHaveBeenCalledWith(expect.objectContaining({
       role: "assistant",
-      content: [{ type: "text", text: "This feature is available in English only." }],
+      content: [{ type: "text", text: "[Earlier conversation summary]\nold compacted context" }],
     }));
     expect(coordinator.setSessionPinned).toHaveBeenCalledWith(sourcePath, false);
   });
@@ -4848,7 +4847,7 @@ describe("SessionCoordinator", () => {
 
     expect(result.replyText).toBe("partial");
     expect(result.stopReason).toBe("length");
-    expect(result.error).toMatch(/$^/);
+    expect(result.error).toContain("stopReason=length");
   });
 
   it("executeIsolated strips closed internal narration blocks from returned reply text", async () => {
@@ -5514,7 +5513,7 @@ describe("SessionCoordinator session reminders", () => {
     expect(entry.lastTimeObservedAt).toBe(laterObservation);
     expect(entry.reminderCompactionRevision).toBe(2);
     expect(entry.reminderConsumedCompactionRevision).toBe(1);
-    expect(coordinator.renderSessionReminderBlock(sessionPath)?.block).toContain("This feature is available in English only.");
+    expect(coordinator.renderSessionReminderBlock(sessionPath)?.block).toContain("Context has been compacted");
   });
 
   it("sets cold restored sessions to observe time on the first message only when a frozen prompt is reused", async () => {
@@ -5538,7 +5537,7 @@ describe("SessionCoordinator session reminders", () => {
 
     const entry = coordinator._getSessionEntryByPath(sessionPath);
     expect(entry.lastTimeObservedAt).toBeNull();
-    expect(coordinator.renderSessionReminderBlock(sessionPath)?.block).toContain("This feature is available in English only.");
+    expect(coordinator.renderSessionReminderBlock(sessionPath)?.block).toContain("Current time:");
     expect(createAgentSessionMock.mock.calls[0][0].resourceLoader.getSystemPrompt()).toBe("FROZEN");
   });
 

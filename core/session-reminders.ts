@@ -116,20 +116,17 @@ function entriesVisibleToAgent(entries: EnvChangeEntry[], recipientAgentId: stri
   return entries.filter((entry) => entry.scope.agentId === recipientAgentId);
 }
 
-function formatMemoryFactsLine(payload: Readonly<MemoryFactsPayload>, isZh: boolean): string {
-  const lines = payload.addedLines.join(isZh ? "English only" : "; ");
-  return isZh ? "This feature is available in English only." : `New memory facts recorded: ${lines}`;
+function formatMemoryFactsLine(payload: Readonly<MemoryFactsPayload>): string {
+  return `New memory facts recorded: ${payload.addedLines.join("; ")}`;
 }
 
-function formatCompactionLine(isZh: boolean): string {
-  return isZh
-    ? "This feature is available in English only."
-    : "Context has been compacted; earlier turns were summarized";
+function formatCompactionLine(): string {
+  return "Context has been compacted; earlier turns were summarized";
 }
 
-function formatTimeLine(now: number, timeZone: string | undefined, isZh: boolean): string {
+function formatTimeLine(now: number, timeZone: string | undefined): string {
   const stamp = formatTimestamp(now, timeZone);
-  return isZh ? "This feature is available in English only." : `Current time: ${stamp}`;
+  return `Current time: ${stamp}`;
 }
 
 function normalizeUnavailableToolNames(value: unknown): string[] {
@@ -145,17 +142,15 @@ function sameNames(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((name, index) => name === right[index]);
 }
 
-function formatUnavailableToolsLine(names: readonly string[], isZh: boolean): string {
-  return isZh
-    ? "This feature is available in English only."
-    : `These session tools are currently unavailable: ${names.join(", ")}`;
+function formatUnavailableToolsLine(names: readonly string[]): string {
+  return `These session tools are currently unavailable: ${names.join(", ")}`;
 }
 
-function selectUnavailableToolBatch(names: readonly string[], isZh: boolean): string[] {
+function selectUnavailableToolBatch(names: readonly string[]): string[] {
   const batch: string[] = [];
   for (const name of names) {
     const candidate = [...batch, name];
-    const line = `- ${formatUnavailableToolsLine(candidate, isZh)}`;
+    const line = `- ${formatUnavailableToolsLine(candidate)}`;
     if (line.length > BLOCK_BODY_CHAR_LIMIT) break;
     batch.push(name);
   }
@@ -182,7 +177,7 @@ export function collectReminderBlock({
   ledger,
   recipientAgentId,
   now,
-  isZh,
+  isZh: _isZh,
   timeZone,
   unavailableToolNames = [],
 }: {
@@ -223,7 +218,7 @@ export function collectReminderBlock({
   const stillAcceptedUnavailableToolNames = acceptedUnavailableToolNames.filter(
     (name) => currentUnavailableSet.has(name),
   );
-  const renderedUnavailableToolNames = selectUnavailableToolBatch(newUnavailableToolNames, isZh);
+  const renderedUnavailableToolNames = selectUnavailableToolBatch(newUnavailableToolNames);
   const nextAcceptedUnavailableToolNames = normalizeUnavailableToolNames([
     ...stillAcceptedUnavailableToolNames,
     ...renderedUnavailableToolNames,
@@ -235,16 +230,16 @@ export function collectReminderBlock({
   );
 
   if (hasNewOutage) {
-    lines.push(`- ${formatUnavailableToolsLine(renderedUnavailableToolNames, isZh)}`);
+    lines.push(`- ${formatUnavailableToolsLine(renderedUnavailableToolNames)}`);
   }
-  if (hasPendingCompaction) lines.push(`- ${formatCompactionLine(isZh)}`);
+  if (hasPendingCompaction) lines.push(`- ${formatCompactionLine()}`);
   for (const entry of memoryFactsEntries(entries)) {
-    lines.push(`- ${formatMemoryFactsLine(entry.payload as Readonly<MemoryFactsPayload>, isZh)}`);
+    lines.push(`- ${formatMemoryFactsLine(entry.payload as Readonly<MemoryFactsPayload>)}`);
   }
 
   const lastTimeObservedAt = sessionEntry.lastTimeObservedAt;
   const isTimeStale = lastTimeObservedAt == null || (now - lastTimeObservedAt) > TIME_STALENESS_MS;
-  if (isTimeStale) lines.push(`- ${formatTimeLine(now, timeZone, isZh)}`);
+  if (isTimeStale) lines.push(`- ${formatTimeLine(now, timeZone)}`);
   if (lines.length === 0 && !availabilityTransition) return null;
 
   let body = lines.join("\n");

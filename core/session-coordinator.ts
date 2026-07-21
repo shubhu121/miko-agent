@@ -329,7 +329,7 @@ function normalizeDeletedAgentTranscriptMessage(message: any) {
     if (!text) return null;
     return {
       role: "assistant",
-      content: [{ type: "text", text: `[English only]\n${text}` }],
+      content: [{ type: "text", text: `[Earlier conversation summary]\n${text}` }],
       timestamp: timestampFromHistoryMessage(message),
     };
   }
@@ -630,18 +630,8 @@ function estimateRetainedValueBytes(value: any, seen: WeakSet<any>, budget: any,
   return total;
 }
 
-function makeBackgroundTaskPrompt(locale: any) {
-  const isZh = String(locale || "").startsWith("zh");
-  return isZh
-    ? `## English only
-
-English only subagent English only
-
-1. English only
-2. English only check_pending_tasks English only
-3. English only
-4. English only <miko-background-result> English only Bridge English only <miko-background-result> English only UI English only`
-    : `## Background Tasks
+function makeBackgroundTaskPrompt(_locale: any) {
+  return `## Background Tasks
 
 After dispatching subagent or other background tasks:
 

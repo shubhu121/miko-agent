@@ -12,31 +12,20 @@ function isThinkingOff(level) {
   return level === "off" || level === "none" || level === "disabled";
 }
 
-function deepseekOutputContractPrompt(locale) {
-  const isZh = String(locale || "").startsWith("zh");
-  if (!isZh) {
-    return [
-      "If you are using a DeepSeek model, follow this DeepSeek output contract:",
-      "reasoning_content / thinking is only for private reasoning scratch work.",
-      "Any user-facing answer, recommendation, code, list, question, summary, or conclusion must be written into the final assistant content after thinking.",
-      "Do not end a response with only reasoning_content / thinking.",
-      "If you use <think> tags, close the thinking tag before emitting the final answer.",
-    ].join("\n");
-  }
-
+function deepseekOutputContractPrompt() {
   return [
-    "This feature is available in English only.",
-    "This feature is available in English only.",
-    "This feature is available in English only.",
-    "This feature is available in English only.",
-    "This feature is available in English only.",
+    "If you are using a DeepSeek model, follow this DeepSeek output contract:",
+    "reasoning_content / thinking is only for private reasoning scratch work.",
+    "Any user-facing answer, recommendation, code, list, question, summary, or conclusion must be written into the final assistant content after thinking.",
+    "Do not end a response with only reasoning_content / thinking.",
+    "If you use <think> tags, close the thinking tag before emitting the final answer.",
   ].join("\n");
 }
 
 export function getProviderPromptPatches(model, options: { reasoningLevel?: any; locale?: any } = {}) {
   if (isThinkingOff(options.reasoningLevel)) return [];
   if (!isDeepSeekReasoningModel(model)) return [];
-  return [deepseekOutputContractPrompt(options.locale)];
+  return [deepseekOutputContractPrompt()];
 }
 
 export const _test = {

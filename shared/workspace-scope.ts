@@ -56,27 +56,9 @@ export function normalizeSessionFolderScope({ primaryCwd, workspaceFolders, auth
   };
 }
 
-export function formatWorkspaceScopePrompt({ primaryCwd, workspaceFolders, locale }: { primaryCwd?: string; workspaceFolders?: string[]; locale?: string } = {}) {
+export function formatWorkspaceScopePrompt({ primaryCwd, workspaceFolders }: { primaryCwd?: string; workspaceFolders?: string[]; locale?: string } = {}) {
   const scope = normalizeWorkspaceScope({ primaryCwd, workspaceFolders });
   if (!scope.primaryCwd && scope.workspaceFolders.length === 0) return "";
-  const isZh = String(locale || "").startsWith("zh");
-
-  if (isZh) {
-    const lines = [
-      "This feature is available in English only.",
-      "",
-      scope.primaryCwd
-        ? "This feature is available in English only."
-        : "This feature is available in English only.",
-      "This feature is available in English only.",
-    ];
-    if (scope.workspaceFolders.length > 0) {
-      lines.push("This feature is available in English only.");
-      for (const folder of scope.workspaceFolders) lines.push(`- ${folder}`);
-      lines.push("This feature is available in English only.");
-    }
-    return lines.join("\n");
-  }
 
   const lines = [
     "## Workspace Scope",

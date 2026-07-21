@@ -151,13 +151,22 @@ npm run typecheck
 
 [Apache License 2.0](LICENSE)
 
-## Links
+## Built with OpenAI Codex & GPT-5
 
-> The repository and release URLs intentionally remain under the legacy `miko-agent` path during the current migration. The repository rename is a separate later step.
+Miko was developed through a collaborative workflow between human engineering and AI.
 
-- [Homepage](https://miko-agent.com)
-- [Report an Issue](https://github.com/shubhu121/miko-agent/issues)
-- [Security](https://github.com/shubhu121/miko-agent/security)
-- [Security Policy](SECURITY.md)
-- [Plugin Development](PLUGINS.md)
-- [Contributing](CONTRIBUTING.md)
+Rather than treating AI as a code completion tool, this project was built using **OpenAI Codex** as an engineering partner. Throughout development, Codex helped implement features, refactor large portions of the codebase, write tests, debug complex issues, improve documentation, and accelerate repetitive engineering tasks.
+
+**GPT-5** complemented this process by acting as a product and architecture advisor—helping refine system design, review implementation trade-offs, improve developer experience, polish documentation, and validate ideas before they became code.
+
+The project still required human decision-making for:
+
+- Product vision and user experience
+- System architecture and long-term maintainability
+- Feature prioritization
+- Security and sandbox design
+- Code review and final implementation decisions
+
+This human-AI collaboration made it possible to build a large-scale desktop AI platform significantly faster while maintaining code quality and architectural consistency.
+
+Miko is as much an experiment in building AI agents as it is an experiment in **building software alongside AI**.
